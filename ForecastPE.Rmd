@@ -1,0 +1,3183 @@
+---
+title: "Forecast Glovo PE - 2021"
+#subtitle: "August 2020"
+author: "Gerardo Flores Sempertegui"
+#date: "9/3/2020"
+output: 
+    pdf_document:
+        #toc: true
+        number_sections: true
+        #theme: united
+        #fig_width: 7
+        #fig_height: 6
+        #fig_caption: true
+        df_print: kable
+        #fontsize: 11pt
+header-includes:
+  - \usepackage{caption}
+  - \usepackage{pdflscape}
+  - \newcommand{\blandscape}{\begin{landscape}}
+  - \newcommand{\elandscape}{\end{landscape}}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.height=8, fig.width=10)
+```
+
+```{r, include=FALSE, echo=FALSE}
+#Load packages
+library(tidyverse)
+library(lubridate)
+library(forecast)
+library(fpp3)
+library(sweep)
+library(knitr)
+library(googlesheets4)
+#Run query: https://glovoapp.eu.looker.com/sql/7myb3rxgtz6p9h)
+#Read calendar
+calendar <- read_csv('C:/Users/Gerardo Flores/Documents/RMkt/RForecast/Calendar/calendar.csv', col_names=TRUE, trim_ws=TRUE, quote="\"")
+#Read data
+historic_orders <- read_csv('C:/Users/Gerardo Flores/Documents/RMkt/RForecast/historic_orders.csv', col_names=TRUE, trim_ws=TRUE, quote="\"")
+```
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+#Theme
+library(ggplot2)
+library(scales)
+themeplot <- theme(plot.title=element_text(color="black", size=12, face="bold", hjust=0.5),
+                   plot.subtitle=element_text(color="black", size=10, face="bold", hjust=0.5),
+                   panel.background=element_rect(fill="white", color="black"),
+                   axis.title.x=element_blank(),
+                   axis.title.y=element_blank(),
+                   axis.text.x=element_text(color="black", size=8),
+                   axis.text.y=element_text(color="black", size=8),
+                   strip.text.x=element_text(color="black", size=8),
+                   legend.title=element_blank(),
+                   legend.position="bottom"
+                   )
+```
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Hourly
+hourly_orders <- historic_orders %>%
+                 group_by(city_code,date,hour) %>%
+                 summarise(total_orders=sum(total_orders, na.rm=TRUE),
+                           delivered_orders=sum(delivered_orders, na.rm=TRUE)  
+                           ) %>%
+                 ungroup() %>%
+                 mutate(date=as.Date(mdy(date))) %>%
+                 arrange(date,hour,city_code)
+# Daily
+daily_orders <- historic_orders %>%
+                group_by(city_code,date) %>%
+                summarise(total_orders=sum(total_orders, na.rm=TRUE),
+                          delivered_orders=sum(delivered_orders, na.rm=TRUE)  
+                          ) %>%
+                ungroup() %>%
+                mutate(date=as.Date(mdy(date))) %>%
+                arrange(city_code,date)
+```
+
+\newpage
+\pagebreak
+
+LIM
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Dates
+min_date_lim <- daily_orders %>% filter(city_code=='LIM') %>% summarise(min(date,na.rm=TRUE)) %>% pull()
+max_date_lim <- daily_orders %>% filter(city_code=='LIM') %>% summarise(max(date,na.rm=TRUE)) %>% pull()
+# Orders
+lim_orders <- calendar %>%
+              mutate(date=as.Date(mdy(date))) %>%
+              filter(date>=min_date_lim & date<=max_date_lim) %>%
+              group_by(date) %>%
+              full_join(daily_orders %>% filter(city_code=='LIM') %>% group_by(date), by=c('date'='date')) %>%
+              ungroup() %>%
+              select(-city_code,-delivered_orders)
+lim_orders[is.na(lim_orders)] <- 0
+# Time Series
+lim_orders_ts <- lim_orders %>% select(-date)
+limmsts <- msts(lim_orders_ts, start=decimal_date(as.Date(min_date_lim)), seasonal.periods=c(7,365.25))
+# TRAINING - VALIDATION
+# Training / validation sets
+lim_training <- window(limmsts, start=c(2018,1), end=c(2020,299))
+lim_validation <- window(limmsts, start=c(2020,300))
+# Fit methods
+fit_lim_sn <- snaive(lim_training)
+fit_lim_hw <- HoltWinters(lim_training)
+fit_lim_ar <- auto.arima(lim_training)
+fit_lim_tb <- tbats(lim_training)
+
+#stlf(lim_training)
+#ets(lim_training)
+#fit_lim_et <- hw(lim_training) #NO!!
+
+# Predict
+fcst_lim_sn <- forecast(fit_lim_sn, h=90)
+fcst_lim_hw <- forecast(fit_lim_hw, h=90)
+fcst_lim_ar <- forecast(fit_lim_ar, h=90)
+fcst_lim_tb <- forecast(fit_lim_tb, h=90)
+# Forecasts
+lim_fcst_sn <- forecast(fit_lim_sn, h=length(lim_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(lim_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("SeasonalNaive"="forecast")
+lim_fcst_hw <- forecast(fit_lim_hw, h=length(lim_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(lim_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("HoltWinters"="forecast")
+lim_fcst_ar <- forecast(fit_lim_ar, h=length(lim_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(lim_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("Arima"="forecast")
+lim_fcst_tb <- forecast(fit_lim_tb, h=length(lim_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(lim_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("TBATS"="forecast")
+fcst_lim <- lim_fcst_sn %>%
+            left_join(lim_fcst_hw %>% select(-actual), by=c('date'='date')) %>%
+            left_join(lim_fcst_ar %>% select(-actual), by=c('date'='date')) %>%
+            left_join(lim_fcst_tb %>% select(-actual), by=c('date'='date')) %>%
+            pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-lim-decomp-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Time Series Decomposition - LIM"}
+#Time Series Decomposition
+decomp_lim_plot <- limmsts %>% mstl() %>% autoplot() + themeplot 
+decomp_lim_plot
+```
+
+```{r fcst-lim-test-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Training / Test Forecast - LIM"}
+# Plot
+fcst_lim_plot <- fcst_lim %>%
+                 mutate(date=as.Date(ymd(date))) %>%
+                 filter(date>='2020-10-01') %>%
+                 ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+                 geom_line(size=1, show.legend=TRUE) +
+                 themeplot
+fcst_lim_plot
+```
+
+```{r fcst-lim-accu-tab, message=FALSE, echo=FALSE}
+# Accuracy
+accu_lim_sn <- fcst_lim_sn %>% accuracy() %>% as.data.frame() %>% mutate(model="Seasonal Naive")
+accu_lim_hw <- fcst_lim_hw %>% accuracy() %>% as.data.frame() %>% mutate(model="Holt-Winters")
+accu_lim_ar <- fcst_lim_ar %>% accuracy() %>% as.data.frame() %>% mutate(model="Auto Arima")
+accu_lim_tb <- fcst_lim_tb %>% accuracy() %>% as.data.frame() %>% mutate(model="TBATS")
+accu_lim <- rbind(accu_lim_sn,accu_lim_hw,accu_lim_ar,accu_lim_tb) %>% select(model,everything())
+kable(accu_lim, caption='Accuracy Forecast - LIM')
+```
+
+```{r fcst-lim-res-tab, message=FALSE, echo=FALSE}
+#PRUEBAS
+#checkresiduals(fcst_lim_sn, main='Residuals Forecast Seasonal Naive - LIM', theme=themeplot)
+#checkresiduals(fcst_lim_hw, main='Residuals Forecast Holt Winters - LIM', theme=themeplot)
+#checkresiduals(fcst_lim_ar, main='Residuals Forecast Auto Arima - LIM', theme=themeplot)
+#checkresiduals(fcst_lim_tb, main='Residuals Forecast TBATS - LIM', theme=themeplot)
+```
+
+\newpage
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# FUTURE
+# Fit methods
+fitlimsn <- snaive(limmsts)
+fitlimhw <- HoltWinters(limmsts)
+fitlimar <- auto.arima(limmsts)
+fitlimtb <- tbats(limmsts)
+# Forecasts
+limfcstsn <- forecast(fitlimsn, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(lim_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("SeasonalNaive"="forecast")
+limfcsthw <- forecast(fitlimhw, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(lim_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("HoltWinters"="forecast")
+limfcstar <- forecast(fitlimar, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(lim_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("Arima"="forecast")
+limfcsttb <- forecast(fitlimtb, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(lim_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("TBATS"="forecast")
+fcstlim <- limfcstsn %>%
+           left_join(limfcsthw %>% select(-actual), by=c('date'='date')) %>%
+           left_join(limfcstar %>% select(-actual), by=c('date'='date')) %>%
+           left_join(limfcsttb %>% select(-actual), by=c('date'='date')) %>%
+           pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-lim-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Forecast - LIM"}
+# Plot
+fcstlimplot <- fcstlim %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               filter(date>='2020-12-01') %>%
+               ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+               geom_line(size=1, show.legend=TRUE) +
+               themeplot
+fcstlimplot
+```
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Hourly Orders
+lim_hour_multiplier <- calendar %>%
+                       mutate(date=as.Date(mdy(date))) %>%
+                       filter(date>=min_date_lim & date<=max_date_lim) %>%
+                       group_by(date) %>%
+                       full_join(hourly_orders %>% filter(city_code=='LIM') %>% group_by(date,hour), by=c('date'='date')) %>%
+                       ungroup() %>%
+                       select(-city_code,-delivered_orders) %>%
+                       mutate(hour=as.numeric(hour)) %>%
+                       arrange(hour) %>%
+                       group_by(date) %>%
+                       mutate(daily_orders=sum(total_orders)) %>%
+                       mutate(perc_orders=total_orders/sum(total_orders)) %>%
+                       select(-total_orders) %>%
+                       pivot_wider(names_from='hour', values_from='perc_orders') %>%
+                       arrange(date) %>%
+                       select(-"NA") %>%
+                       pivot_longer(cols="0":"23", names_to='hour', values_to='perc_orders') %>%
+                       mutate(hour=as.numeric(hour),
+                              weekday=weekdays(date)
+                              ) %>%
+                       select(date,weekday,hour,daily_orders,perc_orders) %>%
+                       ungroup() %>%
+                       mutate(n=row_number()) %>%
+                       filter(n>=max(n, na.rm=TRUE)-(24*7*6)+1) %>%
+                       group_by(weekday,hour) %>%
+                       summarise(hourly_orders=sum(daily_orders*perc_orders,na.rm=TRUE),
+                                 total_orders=sum(daily_orders,na.rm=TRUE)
+                                 ) %>%
+                       ungroup() %>%
+                       arrange(weekday,hour) %>%
+                       mutate(multiplier=hourly_orders/total_orders) %>%
+                       mutate(multiplier=case_when(multiplier<=0.002 ~ 0, TRUE ~ multiplier)) %>%
+                       select(weekday,hour,multiplier)
+# Hourly Predictions
+fcstlimhour <- fcstlim %>%
+               filter(method!='actual') %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               mutate(weekday=weekdays(date)) %>%
+               group_by(weekday) %>%
+               left_join(lim_hour_multiplier, by=c('weekday'='weekday')) %>%
+               mutate(hour_forecast=round(forecast*multiplier,0)) %>%
+               ungroup() %>%
+               group_by(date,method) %>%
+               mutate(forecast=sum(hour_forecast, na.rm=TRUE)) %>%
+               filter(forecast>0) %>%
+               ungroup() %>%
+               mutate(city='LIM') %>%
+               select(city,date,weekday,hour,method,hour_forecast) %>%
+               pivot_wider(names_from=method, values_from=hour_forecast)
+```
+
+\newpage
+
+AQP
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Dates
+min_date_aqp <- daily_orders %>% filter(city_code=='AQP') %>% summarise(min(date,na.rm=TRUE)) %>% pull()
+max_date_aqp <- daily_orders %>% filter(city_code=='AQP') %>% summarise(max(date,na.rm=TRUE)) %>% pull()
+# Orders
+aqp_orders <- calendar %>%
+              mutate(date=as.Date(mdy(date))) %>%
+              filter(date>=min_date_aqp & date<=max_date_aqp) %>%
+              group_by(date) %>%
+              full_join(daily_orders %>% filter(city_code=='AQP') %>% group_by(date), by=c('date'='date')) %>%
+              ungroup() %>%
+              select(-city_code,-delivered_orders)
+aqp_orders[is.na(aqp_orders)] <- 0
+# Time Series
+aqp_orders_ts <- aqp_orders %>% select(-date)
+aqpmsts <- msts(aqp_orders_ts, start=decimal_date(as.Date(min_date_aqp)), seasonal.periods=c(7,365.25))
+# TRAINING - VALIDATION
+# Training / validation sets
+aqp_training <- window(aqpmsts, start=c(2018,253), end=c(2020,299))
+aqp_validation <- window(aqpmsts, start=c(2020,300))
+# Fit methods
+fit_aqp_sn <- snaive(aqp_training)
+fit_aqp_hw <- HoltWinters(aqp_training)
+fit_aqp_ar <- auto.arima(aqp_training)
+fit_aqp_tb <- tbats(aqp_training)
+# Predict
+fcst_aqp_sn <- forecast(fit_aqp_sn, h=90)
+fcst_aqp_hw <- forecast(fit_aqp_hw, h=90)
+fcst_aqp_ar <- forecast(fit_aqp_ar, h=90)
+fcst_aqp_tb <- forecast(fit_aqp_tb, h=90)
+# Forecasts
+aqp_fcst_sn <- forecast(fit_aqp_sn, h=length(aqp_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(aqp_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("SeasonalNaive"="forecast")
+aqp_fcst_hw <- forecast(fit_aqp_hw, h=length(aqp_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(aqp_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("HoltWinters"="forecast")
+aqp_fcst_ar <- forecast(fit_aqp_ar, h=length(aqp_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(aqp_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("Arima"="forecast")
+aqp_fcst_tb <- forecast(fit_aqp_tb, h=length(aqp_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(aqp_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("TBATS"="forecast")
+fcst_aqp <- aqp_fcst_sn %>%
+            left_join(aqp_fcst_hw %>% select(-actual), by=c('date'='date')) %>%
+            left_join(aqp_fcst_ar %>% select(-actual), by=c('date'='date')) %>%
+            left_join(aqp_fcst_tb %>% select(-actual), by=c('date'='date')) %>%
+            pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-aqp-decomp-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Time Series Decomposition - AQP"}
+#Time Series Decomposition
+decomp_aqp_plot <- aqpmsts %>% mstl() %>% autoplot() + themeplot 
+decomp_aqp_plot
+```
+
+```{r fcst-aqp-test-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Training / Test Forecast - AQP"}
+# Plot
+fcst_aqp_plot <- fcst_aqp %>%
+                 mutate(date=as.Date(ymd(date))) %>%
+                 filter(date>='2020-10-01') %>%
+                 ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+                 geom_line(size=1, show.legend=TRUE) +
+                 themeplot
+fcst_aqp_plot
+```
+
+```{r fcst-aqp-accu-tab, message=FALSE, echo=FALSE}
+# Accuracy
+accu_aqp_sn <- fcst_aqp_sn %>% accuracy() %>% as.data.frame() %>% mutate(model="Seasonal Naive")
+accu_aqp_hw <- fcst_aqp_hw %>% accuracy() %>% as.data.frame() %>% mutate(model="Holt-Winters")
+accu_aqp_ar <- fcst_aqp_ar %>% accuracy() %>% as.data.frame() %>% mutate(model="Auto Arima")
+accu_aqp_tb <- fcst_aqp_tb %>% accuracy() %>% as.data.frame() %>% mutate(model="TBATS")
+accu_aqp <- rbind(accu_aqp_sn,accu_aqp_hw,accu_aqp_ar,accu_aqp_tb) %>% select(model,everything())
+kable(accu_aqp, caption='Accuracy Forecast - AQP')
+```
+
+\newpage
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# FUTURE
+# Fit methods
+fitaqpsn <- snaive(aqpmsts)
+fitaqphw <- HoltWinters(aqpmsts)
+fitaqpar <- auto.arima(aqpmsts)
+fitaqptb <- tbats(aqpmsts)
+# Forecasts
+aqpfcstsn <- forecast(fitaqpsn, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(aqp_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("SeasonalNaive"="forecast")
+aqpfcsthw <- forecast(fitaqphw, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(aqp_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("HoltWinters"="forecast")
+aqpfcstar <- forecast(fitaqpar, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(aqp_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("Arima"="forecast")
+aqpfcsttb <- forecast(fitaqptb, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(aqp_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("TBATS"="forecast")
+fcstaqp <- aqpfcstsn %>%
+           left_join(aqpfcsthw %>% select(-actual), by=c('date'='date')) %>%
+           left_join(aqpfcstar %>% select(-actual), by=c('date'='date')) %>%
+           left_join(aqpfcsttb %>% select(-actual), by=c('date'='date')) %>%
+           pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-aqp-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Forecast - AQP"}
+# Plot
+fcstaqpplot <- fcstaqp %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               filter(date>='2020-12-01') %>%
+               ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+               geom_line(size=1, show.legend=TRUE) +
+               themeplot
+fcstaqpplot
+```
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Hourly Orders
+aqp_hour_multiplier <- calendar %>%
+                       mutate(date=as.Date(mdy(date))) %>%
+                       filter(date>=min_date_aqp & date<=max_date_aqp) %>%
+                       group_by(date) %>%
+                       full_join(hourly_orders %>% filter(city_code=='AQP') %>% group_by(date,hour), by=c('date'='date')) %>%
+                       ungroup() %>%
+                       select(-city_code,-delivered_orders) %>%
+                       mutate(hour=as.numeric(hour)) %>%
+                       arrange(hour) %>%
+                       group_by(date) %>%
+                       mutate(daily_orders=sum(total_orders)) %>%
+                       mutate(perc_orders=total_orders/sum(total_orders)) %>%
+                       select(-total_orders) %>%
+                       pivot_wider(names_from='hour', values_from='perc_orders') %>%
+                       arrange(date) %>%
+                       select(-"NA") %>%
+                       pivot_longer(cols="0":"23", names_to='hour', values_to='perc_orders') %>%
+                       mutate(hour=as.numeric(hour),
+                              weekday=weekdays(date)
+                              ) %>%
+                       select(date,weekday,hour,daily_orders,perc_orders) %>%
+                       ungroup() %>%
+                       mutate(n=row_number()) %>%
+                       filter(n>=max(n, na.rm=TRUE)-(24*7*6)+1) %>%
+                       group_by(weekday,hour) %>%
+                       summarise(hourly_orders=sum(daily_orders*perc_orders,na.rm=TRUE),
+                                 total_orders=sum(daily_orders,na.rm=TRUE)
+                                 ) %>%
+                       ungroup() %>%
+                       arrange(weekday,hour) %>%
+                       mutate(multiplier=hourly_orders/total_orders) %>%
+                       mutate(multiplier=case_when(multiplier<=0.002 ~ 0, TRUE ~ multiplier)) %>%
+                       select(weekday,hour,multiplier)
+# Hourly Predictions
+fcstaqphour <- fcstaqp %>%
+               filter(method!='actual') %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               mutate(weekday=weekdays(date)) %>%
+               group_by(weekday) %>%
+               left_join(aqp_hour_multiplier, by=c('weekday'='weekday')) %>%
+               mutate(hour_forecast=round(forecast*multiplier,0)) %>%
+               ungroup() %>%
+               group_by(date,method) %>%
+               mutate(forecast=sum(hour_forecast, na.rm=TRUE)) %>%
+               filter(forecast>0) %>%
+               ungroup() %>%
+               mutate(city='AQP') %>%
+               select(city,date,weekday,hour,method,hour_forecast) %>%
+               pivot_wider(names_from=method, values_from=hour_forecast)
+```
+
+\newpage
+
+TRU
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Dates
+min_date_tru <- daily_orders %>% filter(city_code=='TRU') %>% summarise(min(date,na.rm=TRUE)) %>% pull()
+max_date_tru <- daily_orders %>% filter(city_code=='TRU') %>% summarise(max(date,na.rm=TRUE)) %>% pull()
+# Orders
+tru_orders <- calendar %>%
+              mutate(date=as.Date(mdy(date))) %>%
+              filter(date>=min_date_tru & date<=max_date_tru) %>%
+              group_by(date) %>%
+              full_join(daily_orders %>% filter(city_code=='TRU') %>% group_by(date), by=c('date'='date')) %>%
+              ungroup() %>%
+              select(-city_code,-delivered_orders)
+tru_orders[is.na(tru_orders)] <- 0
+# Time Series
+tru_orders_ts <- tru_orders %>% select(-date)
+trumsts <- msts(tru_orders_ts, start=decimal_date(as.Date(min_date_tru)), seasonal.periods=c(7,365.25))
+# TRAINING - VALIDATION
+# Training / validation sets
+tru_training <- window(trumsts, start=c(2018,323), end=c(2020,299))
+tru_validation <- window(trumsts, start=c(2020,300))
+# Fit methods
+fit_tru_sn <- snaive(tru_training)
+fit_tru_hw <- HoltWinters(tru_training, beta=FALSE, gamma=FALSE) #Modified Holt-Winters
+fit_tru_ar <- auto.arima(tru_training) #https://stats.stackexchange.com/questions/404658/error-while-fitting-data-in-auto-arima-r
+fit_tru_tb <- tbats(tru_training)
+# Predict
+fcst_tru_sn <- forecast(fit_tru_sn, h=90)
+fcst_tru_hw <- forecast(fit_tru_hw, h=90)
+fcst_tru_ar <- forecast(fit_tru_ar, h=90)
+fcst_tru_tb <- forecast(fit_tru_tb, h=90)
+# Forecasts
+tru_fcst_sn <- forecast(fit_tru_sn, h=length(tru_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(tru_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("SeasonalNaive"="forecast")
+tru_fcst_hw <- forecast(fit_tru_hw, h=length(tru_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(tru_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("HoltWinters"="forecast")
+tru_fcst_ar <- forecast(fit_tru_ar, h=length(tru_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(tru_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("Arima"="forecast")
+tru_fcst_tb <- forecast(fit_tru_tb, h=length(tru_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(tru_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("TBATS"="forecast")
+fcst_tru <- tru_fcst_sn %>%
+            left_join(tru_fcst_hw %>% select(-actual), by=c('date'='date')) %>%
+            left_join(tru_fcst_ar %>% select(-actual), by=c('date'='date')) %>%
+            left_join(tru_fcst_tb %>% select(-actual), by=c('date'='date')) %>%
+            pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-tru-decomp-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Time Series Decomposition - TRU"}
+#Time Series Decomposition
+decomp_tru_plot <- trumsts %>% mstl() %>% autoplot() + themeplot 
+decomp_tru_plot
+```
+
+```{r fcst-tru-test-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Training / Test Forecast - TRU"}
+# Plot
+fcst_tru_plot <- fcst_tru %>%
+                 mutate(date=as.Date(ymd(date))) %>%
+                 filter(date>='2020-10-01') %>%
+                 ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+                 geom_line(size=1, show.legend=TRUE) +
+                 themeplot
+fcst_tru_plot
+```
+
+```{r fcst-tru-accu-tab, message=FALSE, echo=FALSE}
+# Accuracy
+accu_tru_sn <- fcst_tru_sn %>% accuracy() %>% as.data.frame() %>% mutate(model="Seasonal Naive")
+accu_tru_hw <- fcst_tru_hw %>% accuracy() %>% as.data.frame() %>% mutate(model="Holt-Winters")
+accu_tru_ar <- fcst_tru_ar %>% accuracy() %>% as.data.frame() %>% mutate(model="Auto Arima")
+accu_tru_tb <- fcst_tru_tb %>% accuracy() %>% as.data.frame() %>% mutate(model="TBATS")
+accu_tru <- rbind(accu_tru_sn,accu_tru_hw,accu_tru_ar,accu_tru_tb) %>% select(model,everything())
+kable(accu_tru, caption='Accuracy Forecast - TRU')
+```
+
+\newpage
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# FUTURE
+# Fit methods
+fittrusn <- snaive(trumsts)
+fittruhw <- HoltWinters(trumsts, beta=FALSE, gamma=FALSE) #Modified Holt-Winters
+fittruar <- auto.arima(trumsts)
+fittrutb <- tbats(trumsts)
+# Forecasts
+trufcstsn <- forecast(fittrusn, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(tru_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("SeasonalNaive"="forecast")
+trufcsthw <- forecast(fittruhw, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(tru_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("HoltWinters"="forecast")
+trufcstar <- forecast(fittruar, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(tru_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("Arima"="forecast")
+trufcsttb <- forecast(fittrutb, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(tru_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("TBATS"="forecast")
+fcsttru <- trufcstsn %>%
+           left_join(trufcsthw %>% select(-actual), by=c('date'='date')) %>%
+           left_join(trufcstar %>% select(-actual), by=c('date'='date')) %>%
+           left_join(trufcsttb %>% select(-actual), by=c('date'='date')) %>%
+           pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-tru-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Forecast - TRU"}
+# Plot
+fcsttruplot <- fcsttru %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               filter(date>='2020-12-01') %>%
+               ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+               geom_line(size=1, show.legend=TRUE) +
+               themeplot
+fcsttruplot
+```
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Hourly Orders
+tru_hour_multiplier <- calendar %>%
+                       mutate(date=as.Date(mdy(date))) %>%
+                       filter(date>=min_date_tru & date<=max_date_tru) %>%
+                       group_by(date) %>%
+                       full_join(hourly_orders %>% filter(city_code=='TRU') %>% group_by(date,hour), by=c('date'='date')) %>%
+                       ungroup() %>%
+                       select(-city_code,-delivered_orders) %>%
+                       mutate(hour=as.numeric(hour)) %>%
+                       arrange(hour) %>%
+                       group_by(date) %>%
+                       mutate(daily_orders=sum(total_orders)) %>%
+                       mutate(perc_orders=total_orders/sum(total_orders)) %>%
+                       select(-total_orders) %>%
+                       pivot_wider(names_from='hour', values_from='perc_orders') %>%
+                       arrange(date) %>%
+                       select(-"NA") %>%
+                       pivot_longer(cols="0":"23", names_to='hour', values_to='perc_orders') %>%
+                       mutate(hour=as.numeric(hour),
+                              weekday=weekdays(date)
+                              ) %>%
+                       select(date,weekday,hour,daily_orders,perc_orders) %>%
+                       ungroup() %>%
+                       mutate(n=row_number()) %>%
+                       filter(n>=max(n, na.rm=TRUE)-(24*7*6)+1) %>%
+                       group_by(weekday,hour) %>%
+                       summarise(hourly_orders=sum(daily_orders*perc_orders,na.rm=TRUE),
+                                 total_orders=sum(daily_orders,na.rm=TRUE)
+                                 ) %>%
+                       ungroup() %>%
+                       arrange(weekday,hour) %>%
+                       mutate(multiplier=hourly_orders/total_orders) %>%
+                       mutate(multiplier=case_when(multiplier<=0.002 ~ 0, TRUE ~ multiplier)) %>%
+                       select(weekday,hour,multiplier)
+# Hourly Predictions
+fcsttruhour <- fcsttru %>%
+               filter(method!='actual') %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               mutate(weekday=weekdays(date)) %>%
+               group_by(weekday) %>%
+               left_join(tru_hour_multiplier, by=c('weekday'='weekday')) %>%
+               mutate(hour_forecast=round(forecast*multiplier,0)) %>%
+               ungroup() %>%
+               group_by(date,method) %>%
+               mutate(forecast=sum(hour_forecast, na.rm=TRUE)) %>%
+               filter(forecast>0) %>%
+               ungroup() %>%
+               mutate(city='TRU') %>%
+               select(city,date,weekday,hour,method,hour_forecast) %>%
+               pivot_wider(names_from=method, values_from=hour_forecast)
+```
+
+\newpage
+
+CHI
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Dates
+min_date_chi <- daily_orders %>% filter(city_code=='CHI') %>% summarise(min(date,na.rm=TRUE)) %>% pull()
+max_date_chi <- daily_orders %>% filter(city_code=='CHI') %>% summarise(max(date,na.rm=TRUE)) %>% pull()
+# Orders
+chi_orders <- calendar %>%
+              mutate(date=as.Date(mdy(date))) %>%
+              filter(date>=min_date_chi & date<=max_date_chi) %>%
+              group_by(date) %>%
+              full_join(daily_orders %>% filter(city_code=='CHI') %>% group_by(date), by=c('date'='date')) %>%
+              ungroup() %>%
+              select(-city_code,-delivered_orders)
+chi_orders[is.na(chi_orders)] <- 0
+# Time Series
+chi_orders_ts <- chi_orders %>% select(-date)
+chimsts <- msts(chi_orders_ts, start=decimal_date(as.Date(min_date_chi)), seasonal.periods=c(7,365.25))
+# TRAINING - VALIDATION
+# Training / validation sets
+chi_training <- window(chimsts, start=c(2019,161), end=c(2020,299))
+chi_validation <- window(chimsts, start=c(2020,300))
+# Fit methods
+fit_chi_sn <- snaive(chi_training)
+fit_chi_hw <- HoltWinters(chi_training, beta=FALSE, gamma=FALSE) #Modified Holt-Winters
+fit_chi_ar <- auto.arima(chi_training)
+fit_chi_tb <- tbats(chi_training)
+# Predict
+fcst_chi_sn <- forecast(fit_chi_sn, h=90)
+fcst_chi_hw <- forecast(fit_chi_hw, h=90)
+fcst_chi_ar <- forecast(fit_chi_ar, h=90)
+fcst_chi_tb <- forecast(fit_chi_tb, h=90)
+# Forecasts
+chi_fcst_sn <- forecast(fit_chi_sn, h=length(chi_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(chi_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("SeasonalNaive"="forecast")
+chi_fcst_hw <- forecast(fit_chi_hw, h=length(chi_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(chi_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("HoltWinters"="forecast")
+chi_fcst_ar <- forecast(fit_chi_ar, h=length(chi_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(chi_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("Arima"="forecast")
+chi_fcst_tb <- forecast(fit_chi_tb, h=length(chi_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(chi_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("TBATS"="forecast")
+fcst_chi <- chi_fcst_sn %>%
+            left_join(chi_fcst_hw %>% select(-actual), by=c('date'='date')) %>%
+            left_join(chi_fcst_ar %>% select(-actual), by=c('date'='date')) %>%
+            left_join(chi_fcst_tb %>% select(-actual), by=c('date'='date')) %>%
+            pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-chi-decomp-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Time Series Decomposition - CHI"}
+#Time Series Decomposition
+#decompose_chi <- tslm(chimsts ~ trend + fourier(chimsts, c(3,90)))
+#trend_chi <- coef(decompose_chi)[1] + coef(decompose_chi)['trend']*seq_along(chimsts)
+#components_chi <- cbind(Data=chimsts, Trend=trend_chi, Seasonal=(chimsts-trend-residuals(decompose_chi)), Remainder=residuals(decompose_chi))
+#decomp_chi_plot <- autoplot(components_chi,facet=TRUE)+themeplot
+#decomp_chi_plot
+```
+
+```{r fcst-chi-test-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Training / Test Forecast - CHI"}
+# Plot
+fcst_chi_plot <- fcst_chi %>%
+                 mutate(date=as.Date(ymd(date))) %>%
+                 filter(date>='2020-10-01') %>%
+                 ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+                 geom_line(size=1, show.legend=TRUE) +
+                 themeplot
+fcst_chi_plot
+```
+
+```{r fcst-chi-accu-tab, message=FALSE, echo=FALSE}
+# Accuracy
+accu_chi_sn <- fcst_chi_sn %>% accuracy() %>% as.data.frame() %>% mutate(model="Seasonal Naive")
+accu_chi_hw <- fcst_chi_hw %>% accuracy() %>% as.data.frame() %>% mutate(model="Holt-Winters")
+accu_chi_ar <- fcst_chi_ar %>% accuracy() %>% as.data.frame() %>% mutate(model="Auto Arima")
+accu_chi_tb <- fcst_chi_tb %>% accuracy() %>% as.data.frame() %>% mutate(model="TBATS")
+accu_chi <- rbind(accu_chi_sn,accu_chi_hw,accu_chi_ar,accu_chi_tb) %>% select(model,everything())
+kable(accu_chi, caption='Accuracy Forecast - CHI')
+```
+
+\newpage
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# FUTURE
+# Fit methods
+fitchisn <- snaive(chimsts)
+fitchihw <- HoltWinters(chimsts, beta=FALSE, gamma=FALSE) #Modified Holt-Winters
+fitchiar <- auto.arima(chimsts)
+fitchitb <- tbats(chimsts)
+# Forecasts
+chifcstsn <- forecast(fitchisn, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(chi_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("SeasonalNaive"="forecast")
+chifcsthw <- forecast(fitchihw, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(chi_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("HoltWinters"="forecast")
+chifcstar <- forecast(fitchiar, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(chi_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("Arima"="forecast")
+chifcsttb <- forecast(fitchitb, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(chi_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("TBATS"="forecast")
+fcstchi <- chifcstsn %>%
+           left_join(chifcsthw %>% select(-actual), by=c('date'='date')) %>%
+           left_join(chifcstar %>% select(-actual), by=c('date'='date')) %>%
+           left_join(chifcsttb %>% select(-actual), by=c('date'='date')) %>%
+           pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-chi-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Forecast - CHI"}
+# Plot
+fcstchiplot <- fcstchi %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               filter(date>='2020-12-01') %>%
+               ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+               geom_line(size=1, show.legend=TRUE) +
+               themeplot
+fcstchiplot
+```
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Hourly Orders
+chi_hour_multiplier <- calendar %>%
+                       mutate(date=as.Date(mdy(date))) %>%
+                       filter(date>=min_date_chi & date<=max_date_chi) %>%
+                       group_by(date) %>%
+                       full_join(hourly_orders %>% filter(city_code=='CHI') %>% group_by(date,hour), by=c('date'='date')) %>%
+                       ungroup() %>%
+                       select(-city_code,-delivered_orders) %>%
+                       mutate(hour=as.numeric(hour)) %>%
+                       arrange(hour) %>%
+                       group_by(date) %>%
+                       mutate(daily_orders=sum(total_orders)) %>%
+                       mutate(perc_orders=total_orders/sum(total_orders)) %>%
+                       select(-total_orders) %>%
+                       pivot_wider(names_from='hour', values_from='perc_orders') %>%
+                       arrange(date) %>%
+                       select(-"NA") %>%
+                       pivot_longer(cols="0":"23", names_to='hour', values_to='perc_orders') %>%
+                       mutate(hour=as.numeric(hour),
+                              weekday=weekdays(date)
+                              ) %>%
+                       select(date,weekday,hour,daily_orders,perc_orders) %>%
+                       ungroup() %>%
+                       mutate(n=row_number()) %>%
+                       filter(n>=max(n, na.rm=TRUE)-(24*7*6)+1) %>%
+                       group_by(weekday,hour) %>%
+                       summarise(hourly_orders=sum(daily_orders*perc_orders,na.rm=TRUE),
+                                 total_orders=sum(daily_orders,na.rm=TRUE)
+                                 ) %>%
+                       ungroup() %>%
+                       arrange(weekday,hour) %>%
+                       mutate(multiplier=hourly_orders/total_orders) %>%
+                       mutate(multiplier=case_when(multiplier<=0.002 ~ 0, TRUE ~ multiplier)) %>%
+                       select(weekday,hour,multiplier)
+# Hourly Predictions
+fcstchihour <- fcstchi %>%
+               filter(method!='actual') %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               mutate(weekday=weekdays(date)) %>%
+               group_by(weekday) %>%
+               left_join(chi_hour_multiplier, by=c('weekday'='weekday')) %>%
+               mutate(hour_forecast=round(forecast*multiplier,0)) %>%
+               ungroup() %>%
+               group_by(date,method) %>%
+               mutate(forecast=sum(hour_forecast, na.rm=TRUE)) %>%
+               filter(forecast>0) %>%
+               ungroup() %>%
+               mutate(city='CHI') %>%
+               select(city,date,weekday,hour,method,hour_forecast) %>%
+               pivot_wider(names_from=method, values_from=hour_forecast)
+```
+
+\newpage
+
+PIU
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Dates
+min_date_piu <- daily_orders %>% filter(city_code=='PIU') %>% summarise(min(date,na.rm=TRUE)) %>% pull()
+max_date_piu <- daily_orders %>% filter(city_code=='PIU') %>% summarise(max(date,na.rm=TRUE)) %>% pull()
+# Orders
+piu_orders <- calendar %>%
+              mutate(date=as.Date(mdy(date))) %>%
+              filter(date>=min_date_piu & date<=max_date_piu) %>%
+              group_by(date) %>%
+              full_join(daily_orders %>% filter(city_code=='PIU') %>% group_by(date), by=c('date'='date')) %>%
+              ungroup() %>%
+              select(-city_code,-delivered_orders)
+piu_orders[is.na(piu_orders)] <- 0
+# Time Series
+piu_orders_ts <- piu_orders %>% select(-date)
+piumsts <- msts(piu_orders_ts, start=decimal_date(as.Date(min_date_piu)), seasonal.periods=c(7,365.25))
+# TRAINING - VALIDATION
+# Training / validation sets
+piu_training <- window(piumsts, start=c(2019,56), end=c(2020,299))
+piu_validation <- window(piumsts, start=c(2020,300))
+# Fit methods
+fit_piu_sn <- snaive(piu_training)
+fit_piu_hw <- HoltWinters(piu_training, beta=FALSE, gamma=FALSE) #Modified Holt-Winters
+fit_piu_ar <- auto.arima(piu_training)
+fit_piu_tb <- tbats(piu_training)
+# Predict
+fcst_piu_sn <- forecast(fit_piu_sn, h=90)
+fcst_piu_hw <- forecast(fit_piu_hw, h=90)
+fcst_piu_ar <- forecast(fit_piu_ar, h=90)
+fcst_piu_tb <- forecast(fit_piu_tb, h=90)
+# Forecasts
+piu_fcst_sn <- forecast(fit_piu_sn, h=length(piu_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(piu_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("SeasonalNaive"="forecast")
+piu_fcst_hw <- forecast(fit_piu_hw, h=length(piu_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(piu_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("HoltWinters"="forecast")
+piu_fcst_ar <- forecast(fit_piu_ar, h=length(piu_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(piu_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("Arima"="forecast")
+piu_fcst_tb <- forecast(fit_piu_tb, h=length(piu_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(piu_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("TBATS"="forecast")
+fcst_piu <- piu_fcst_sn %>%
+            left_join(piu_fcst_hw %>% select(-actual), by=c('date'='date')) %>%
+            left_join(piu_fcst_ar %>% select(-actual), by=c('date'='date')) %>%
+            left_join(piu_fcst_tb %>% select(-actual), by=c('date'='date')) %>%
+            pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-piu-decomp-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Time Series Decomposition - PIU"}
+#Time Series Decomposition
+#decompose_piu <- tslm(piumsts ~ trend + fourier(piumsts, c(3,90)))
+#trend_piu <- coef(decompose_piu)[1] + coef(decompose_piu)['trend']*seq_along(piumsts)
+#components_piu <- cbind(Data=piumsts, Trend=trend_piu, Seasonal=(piumsts-trend-residuals(decompose_piu)), Remainder=residuals(decompose_piu))
+#decomp_piu_plot <- autoplot(components_piu,facet=TRUE)+themeplot
+#decomp_piu_plot
+```
+
+```{r fcst-piu-test-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Training / Test Forecast - PIU"}
+# Plot
+fcst_piu_plot <- fcst_piu %>%
+                 mutate(date=as.Date(ymd(date))) %>%
+                 filter(date>='2020-10-01') %>%
+                 ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+                 geom_line(size=1, show.legend=TRUE) +
+                 themeplot
+fcst_piu_plot
+```
+
+```{r fcst-piu-accu-tab, message=FALSE, echo=FALSE}
+# Accuracy
+accu_piu_sn <- fcst_piu_sn %>% accuracy() %>% as.data.frame() %>% mutate(model="Seasonal Naive")
+accu_piu_hw <- fcst_piu_hw %>% accuracy() %>% as.data.frame() %>% mutate(model="Holt-Winters")
+accu_piu_ar <- fcst_piu_ar %>% accuracy() %>% as.data.frame() %>% mutate(model="Auto Arima")
+accu_piu_tb <- fcst_piu_tb %>% accuracy() %>% as.data.frame() %>% mutate(model="TBATS")
+accu_piu <- rbind(accu_piu_sn,accu_piu_hw,accu_piu_ar,accu_piu_tb) %>% select(model,everything())
+kable(accu_piu, caption='Accuracy Forecast - PIU')
+```
+
+\newpage
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# FUTURE
+# Fit methods
+fitpiusn <- snaive(piumsts)
+fitpiuhw <- HoltWinters(piumsts, beta=FALSE, gamma=FALSE) #Modified Holt-Winters
+fitpiuar <- auto.arima(piumsts)
+fitpiutb <- tbats(piumsts)
+# Forecasts
+piufcstsn <- forecast(fitpiusn, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(piu_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("SeasonalNaive"="forecast")
+piufcsthw <- forecast(fitpiuhw, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(piu_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("HoltWinters"="forecast")
+piufcstar <- forecast(fitpiuar, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(piu_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("Arima"="forecast")
+piufcsttb <- forecast(fitpiutb, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(piu_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("TBATS"="forecast")
+fcstpiu <- piufcstsn %>%
+           left_join(piufcsthw %>% select(-actual), by=c('date'='date')) %>%
+           left_join(piufcstar %>% select(-actual), by=c('date'='date')) %>%
+           left_join(piufcsttb %>% select(-actual), by=c('date'='date')) %>%
+           pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-piu-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Forecast - PIU"}
+# Plot
+fcstpiuplot <- fcstpiu %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               filter(date>='2020-12-01') %>%
+               ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+               geom_line(size=1, show.legend=TRUE) +
+               themeplot
+fcstpiuplot
+```
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Hourly Orders
+piu_hour_multiplier <- calendar %>%
+                       mutate(date=as.Date(mdy(date))) %>%
+                       filter(date>=min_date_piu & date<=max_date_piu) %>%
+                       group_by(date) %>%
+                       full_join(hourly_orders %>% filter(city_code=='PIU') %>% group_by(date,hour), by=c('date'='date')) %>%
+                       ungroup() %>%
+                       select(-city_code,-delivered_orders) %>%
+                       mutate(hour=as.numeric(hour)) %>%
+                       arrange(hour) %>%
+                       group_by(date) %>%
+                       mutate(daily_orders=sum(total_orders)) %>%
+                       mutate(perc_orders=total_orders/sum(total_orders)) %>%
+                       select(-total_orders) %>%
+                       pivot_wider(names_from='hour', values_from='perc_orders') %>%
+                       arrange(date) %>%
+                       select(-"NA") %>%
+                       pivot_longer(cols="0":"23", names_to='hour', values_to='perc_orders') %>%
+                       mutate(hour=as.numeric(hour),
+                              weekday=weekdays(date)
+                              ) %>%
+                       select(date,weekday,hour,daily_orders,perc_orders) %>%
+                       ungroup() %>%
+                       mutate(n=row_number()) %>%
+                       filter(n>=max(n, na.rm=TRUE)-(24*7*6)+1) %>%
+                       group_by(weekday,hour) %>%
+                       summarise(hourly_orders=sum(daily_orders*perc_orders,na.rm=TRUE),
+                                 total_orders=sum(daily_orders,na.rm=TRUE)
+                                 ) %>%
+                       ungroup() %>%
+                       arrange(weekday,hour) %>%
+                       mutate(multiplier=hourly_orders/total_orders) %>%
+                       mutate(multiplier=case_when(multiplier<=0.002 ~ 0, TRUE ~ multiplier)) %>%
+                       select(weekday,hour,multiplier)
+# Hourly Predictions
+fcstpiuhour <- fcstpiu %>%
+               filter(method!='actual') %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               mutate(weekday=weekdays(date)) %>%
+               group_by(weekday) %>%
+               left_join(piu_hour_multiplier, by=c('weekday'='weekday')) %>%
+               mutate(hour_forecast=round(forecast*multiplier,0)) %>%
+               ungroup() %>%
+               group_by(date,method) %>%
+               mutate(forecast=sum(hour_forecast, na.rm=TRUE)) %>%
+               filter(forecast>0) %>%
+               ungroup() %>%
+               mutate(city='PIU') %>%
+               select(city,date,weekday,hour,method,hour_forecast) %>%
+               pivot_wider(names_from=method, values_from=hour_forecast)
+```
+
+\newpage
+
+SJL
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Dates
+min_date_sjl <- daily_orders %>% filter(city_code=='SJL') %>% summarise(min(date,na.rm=TRUE)) %>% pull()
+max_date_sjl <- daily_orders %>% filter(city_code=='SJL') %>% summarise(max(date,na.rm=TRUE)) %>% pull()
+# Orders
+sjl_orders <- calendar %>%
+              mutate(date=as.Date(mdy(date))) %>%
+              filter(date>=min_date_sjl & date<=max_date_sjl) %>%
+              group_by(date) %>%
+              full_join(daily_orders %>% filter(city_code=='SJL') %>% group_by(date), by=c('date'='date')) %>%
+              ungroup() %>%
+              select(-city_code,-delivered_orders)
+sjl_orders[is.na(sjl_orders)] <- 0
+# Time Series
+sjl_orders_ts <- sjl_orders %>% select(-date)
+sjlmsts <- msts(sjl_orders_ts, start=decimal_date(as.Date(min_date_sjl)), seasonal.periods=c(7,365.25))
+# TRAINING - VALIDATION
+# Training / validation sets
+sjl_training <- window(sjlmsts, start=c(2019,259), end=c(2020,299))
+sjl_validation <- window(sjlmsts, start=c(2020,300))
+# Fit methods
+fit_sjl_sn <- snaive(sjl_training)
+fit_sjl_hw <- HoltWinters(sjl_training, beta=FALSE, gamma=FALSE) #Modified Holt-Winters
+fit_sjl_ar <- auto.arima(sjl_training)
+fit_sjl_tb <- tbats(sjl_training)
+# Predict
+fcst_sjl_sn <- forecast(fit_sjl_sn, h=90)
+fcst_sjl_hw <- forecast(fit_sjl_hw, h=90)
+fcst_sjl_ar <- forecast(fit_sjl_ar, h=90)
+fcst_sjl_tb <- forecast(fit_sjl_tb, h=90)
+# Forecasts
+sjl_fcst_sn <- forecast(fit_sjl_sn, h=length(sjl_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(sjl_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("SeasonalNaive"="forecast")
+sjl_fcst_hw <- forecast(fit_sjl_hw, h=length(sjl_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(sjl_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("HoltWinters"="forecast")
+sjl_fcst_ar <- forecast(fit_sjl_ar, h=length(sjl_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(sjl_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("Arima"="forecast")
+sjl_fcst_tb <- forecast(fit_sjl_tb, h=length(sjl_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(sjl_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("TBATS"="forecast")
+fcst_sjl <- sjl_fcst_sn %>%
+            left_join(sjl_fcst_hw %>% select(-actual), by=c('date'='date')) %>%
+            left_join(sjl_fcst_ar %>% select(-actual), by=c('date'='date')) %>%
+            left_join(sjl_fcst_tb %>% select(-actual), by=c('date'='date')) %>%
+            pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-sjl-decomp-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Time Series Decomposition - SJL"}
+#Time Series Decomposition
+#decompose_sjl <- tslm(sjlmsts ~ trend + fourier(sjlmsts, c(3,90)))
+#trend_sjl <- coef(decompose_sjl)[1] + coef(decompose_sjl)['trend']*seq_along(sjlmsts)
+#components_sjl <- cbind(Data=sjlmsts, Trend=trend_sjl, Seasonal=(sjlmsts-trend-residuals(decompose_sjl)), Remainder=residuals(decompose_sjl))
+#decomp_sjl_plot <- autoplot(components_sjl,facet=TRUE)+themeplot
+#decomp_sjl_plot
+```
+
+```{r fcst-sjl-test-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Training / Test Forecast - SJL"}
+# Plot
+fcst_sjl_plot <- fcst_sjl %>%
+                 mutate(date=as.Date(ymd(date))) %>%
+                 filter(date>='2020-10-01') %>%
+                 ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+                 geom_line(size=1, show.legend=TRUE) +
+                 themeplot
+fcst_sjl_plot
+```
+
+```{r fcst-sjl-accu-tab, message=FALSE, echo=FALSE}
+# Accuracy
+accu_sjl_sn <- fcst_sjl_sn %>% accuracy() %>% as.data.frame() %>% mutate(model="Seasonal Naive")
+accu_sjl_hw <- fcst_sjl_hw %>% accuracy() %>% as.data.frame() %>% mutate(model="Holt-Winters")
+accu_sjl_ar <- fcst_sjl_ar %>% accuracy() %>% as.data.frame() %>% mutate(model="Auto Arima")
+accu_sjl_tb <- fcst_sjl_tb %>% accuracy() %>% as.data.frame() %>% mutate(model="TBATS")
+accu_sjl <- rbind(accu_sjl_sn,accu_sjl_hw,accu_sjl_ar,accu_sjl_tb) %>% select(model,everything())
+kable(accu_sjl, caption='Accuracy Forecast - SJL')
+```
+
+\newpage
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# FUTURE
+# Fit methods
+fitsjlsn <- snaive(sjlmsts)
+fitsjlhw <- HoltWinters(sjlmsts, beta=FALSE, gamma=FALSE) #Modified Holt-Winters
+fitsjlar <- auto.arima(sjlmsts)
+fitsjltb <- tbats(sjlmsts)
+# Forecasts
+sjlfcstsn <- forecast(fitsjlsn, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(sjl_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("SeasonalNaive"="forecast")
+sjlfcsthw <- forecast(fitsjlhw, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(sjl_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("HoltWinters"="forecast")
+sjlfcstar <- forecast(fitsjlar, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(sjl_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("Arima"="forecast")
+sjlfcsttb <- forecast(fitsjltb, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(sjl_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("TBATS"="forecast")
+fcstsjl <- sjlfcstsn %>%
+           left_join(sjlfcsthw %>% select(-actual), by=c('date'='date')) %>%
+           left_join(sjlfcstar %>% select(-actual), by=c('date'='date')) %>%
+           left_join(sjlfcsttb %>% select(-actual), by=c('date'='date')) %>%
+           pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-sjl-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Forecast - SJL"}
+# Plot
+fcstsjlplot <- fcstsjl %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               filter(date>='2020-12-01') %>%
+               ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+               geom_line(size=1, show.legend=TRUE) +
+               themeplot
+fcstsjlplot
+```
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Hourly Orders
+sjl_hour_multiplier <- calendar %>%
+                       mutate(date=as.Date(mdy(date))) %>%
+                       filter(date>=min_date_sjl & date<=max_date_sjl) %>%
+                       group_by(date) %>%
+                       full_join(hourly_orders %>% filter(city_code=='SJL') %>% group_by(date,hour), by=c('date'='date')) %>%
+                       ungroup() %>%
+                       select(-city_code,-delivered_orders) %>%
+                       mutate(hour=as.numeric(hour)) %>%
+                       arrange(hour) %>%
+                       group_by(date) %>%
+                       mutate(daily_orders=sum(total_orders)) %>%
+                       mutate(perc_orders=total_orders/sum(total_orders)) %>%
+                       select(-total_orders) %>%
+                       pivot_wider(names_from='hour', values_from='perc_orders') %>%
+                       arrange(date) %>%
+                       select(-"NA") %>%
+                       pivot_longer(cols="0":"23", names_to='hour', values_to='perc_orders') %>%
+                       mutate(hour=as.numeric(hour),
+                              weekday=weekdays(date)
+                              ) %>%
+                       select(date,weekday,hour,daily_orders,perc_orders) %>%
+                       ungroup() %>%
+                       mutate(n=row_number()) %>%
+                       filter(n>=max(n, na.rm=TRUE)-(24*7*6)+1) %>%
+                       group_by(weekday,hour) %>%
+                       summarise(hourly_orders=sum(daily_orders*perc_orders,na.rm=TRUE),
+                                 total_orders=sum(daily_orders,na.rm=TRUE)
+                                 ) %>%
+                       ungroup() %>%
+                       arrange(weekday,hour) %>%
+                       mutate(multiplier=hourly_orders/total_orders) %>%
+                       mutate(multiplier=case_when(multiplier<=0.002 ~ 0, TRUE ~ multiplier)) %>%
+                       select(weekday,hour,multiplier)
+# Hourly Predictions
+fcstsjlhour <- fcstsjl %>%
+               filter(method!='actual') %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               mutate(weekday=weekdays(date)) %>%
+               group_by(weekday) %>%
+               left_join(sjl_hour_multiplier, by=c('weekday'='weekday')) %>%
+               mutate(hour_forecast=round(forecast*multiplier,0)) %>%
+               ungroup() %>%
+               group_by(date,method) %>%
+               mutate(forecast=sum(hour_forecast, na.rm=TRUE)) %>%
+               filter(forecast>0) %>%
+               ungroup() %>%
+               mutate(city='SJL') %>%
+               select(city,date,weekday,hour,method,hour_forecast) %>%
+               pivot_wider(names_from=method, values_from=hour_forecast)
+```
+
+\newpage
+
+CUZ
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Dates
+min_date_cuz <- daily_orders %>% filter(city_code=='CUZ') %>% summarise(min(date,na.rm=TRUE)) %>% pull()
+max_date_cuz <- daily_orders %>% filter(city_code=='CUZ') %>% summarise(max(date,na.rm=TRUE)) %>% pull()
+# Orders
+cuz_orders <- calendar %>%
+              mutate(date=as.Date(mdy(date))) %>%
+              filter(date>=min_date_cuz & date<=max_date_cuz) %>%
+              group_by(date) %>%
+              full_join(daily_orders %>% filter(city_code=='CUZ') %>% group_by(date), by=c('date'='date')) %>%
+              ungroup() %>%
+              select(-city_code,-delivered_orders)
+cuz_orders[is.na(cuz_orders)] <- 0
+# Time Series
+cuz_orders_ts <- cuz_orders %>% select(-date)
+cuzmsts <- msts(cuz_orders_ts, start=decimal_date(as.Date(min_date_cuz)), seasonal.periods=c(7,365.25))
+# Time Series Decomposition
+#cuzmsts %>% decompose() %>% autoplot() + themeplot
+# TRAINING - VALIDATION
+# Training / validation sets
+cuz_training <- window(cuzmsts, start=c(2019,280), end=c(2020,299))
+cuz_validation <- window(cuzmsts, start=c(2020,300))
+# Fit methods
+fit_cuz_sn <- snaive(cuz_training)
+fit_cuz_hw <- HoltWinters(cuz_training, beta=FALSE, gamma=FALSE) #Modified Holt-Winters
+fit_cuz_ar <- auto.arima(cuz_training)
+fit_cuz_tb <- tbats(cuz_training)
+# Predict
+fcst_cuz_sn <- forecast(fit_cuz_sn, h=90)
+fcst_cuz_hw <- forecast(fit_cuz_hw, h=90)
+fcst_cuz_ar <- forecast(fit_cuz_ar, h=90)
+fcst_cuz_tb <- forecast(fit_cuz_tb, h=90)
+# Forecasts
+cuz_fcst_sn <- forecast(fit_cuz_sn, h=length(cuz_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(cuz_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("SeasonalNaive"="forecast")
+cuz_fcst_hw <- forecast(fit_cuz_hw, h=length(cuz_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(cuz_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("HoltWinters"="forecast")
+cuz_fcst_ar <- forecast(fit_cuz_ar, h=length(cuz_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(cuz_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("Arima"="forecast")
+cuz_fcst_tb <- forecast(fit_cuz_tb, h=length(cuz_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(cuz_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("TBATS"="forecast")
+fcst_cuz <- cuz_fcst_sn %>%
+            left_join(cuz_fcst_hw %>% select(-actual), by=c('date'='date')) %>%
+            left_join(cuz_fcst_ar %>% select(-actual), by=c('date'='date')) %>%
+            left_join(cuz_fcst_tb %>% select(-actual), by=c('date'='date')) %>%
+            pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-cuz-decomp-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Time Series Decomposition - CUZ"}
+#Time Series Decomposition
+#decompose_cuz <- tslm(cuzmsts ~ trend + fourier(cuzmsts, c(3,2)))
+#trend_cuz <- coef(decompose_cuz)[1] + coef(decompose_cuz)['trend']*seq_along(cuzmsts)
+#components_cuz <- cbind(Data=cuzmsts, Trend=trend_cuz, Seasonal=(cuzmsts-trend-residuals(decompose_cuz)), Remainder=residuals(decompose_cuz))
+#decomp_cuz_plot <- autoplot(components_cuz,facet=TRUE)+themeplot
+#decomp_cuz_plot
+```
+
+```{r fcst-cuz-test-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Training / Test Forecast - CUZ"}
+# Plot
+fcst_cuz_plot <- fcst_cuz %>%
+                 mutate(date=as.Date(ymd(date))) %>%
+                 filter(date>='2020-10-01') %>%
+                 ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+                 geom_line(size=1, show.legend=TRUE) +
+                 themeplot
+fcst_cuz_plot
+```
+
+```{r fcst-cuz-accu-tab, message=FALSE, echo=FALSE}
+# Accuracy
+accu_cuz_sn <- fcst_cuz_sn %>% accuracy() %>% as.data.frame() %>% mutate(model="Seasonal Naive")
+accu_cuz_hw <- fcst_cuz_hw %>% accuracy() %>% as.data.frame() %>% mutate(model="Holt-Winters")
+accu_cuz_ar <- fcst_cuz_ar %>% accuracy() %>% as.data.frame() %>% mutate(model="Auto Arima")
+accu_cuz_tb <- fcst_cuz_tb %>% accuracy() %>% as.data.frame() %>% mutate(model="TBATS")
+accu_cuz <- rbind(accu_cuz_sn,accu_cuz_hw,accu_cuz_ar,accu_cuz_tb) %>% select(model,everything())
+kable(accu_cuz, caption='Accuracy Forecast - CUZ')
+```
+
+\newpage
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# FUTURE
+# Fit methods
+fitcuzsn <- snaive(cuzmsts)
+fitcuzhw <- HoltWinters(cuzmsts, beta=FALSE, gamma=FALSE) #Modified Holt-Winters
+fitcuzar <- auto.arima(cuzmsts)
+fitcuztb <- tbats(cuzmsts)
+# Forecasts
+cuzfcstsn <- forecast(fitcuzsn, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(cuz_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("SeasonalNaive"="forecast")
+cuzfcsthw <- forecast(fitcuzhw, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(cuz_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("HoltWinters"="forecast")
+cuzfcstar <- forecast(fitcuzar, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(cuz_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("Arima"="forecast")
+cuzfcsttb <- forecast(fitcuztb, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(cuz_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("TBATS"="forecast")
+fcstcuz <- cuzfcstsn %>%
+           left_join(cuzfcsthw %>% select(-actual), by=c('date'='date')) %>%
+           left_join(cuzfcstar %>% select(-actual), by=c('date'='date')) %>%
+           left_join(cuzfcsttb %>% select(-actual), by=c('date'='date')) %>%
+           pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-cuz-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Forecast - CUZ"}
+# Plot
+fcstcuzplot <- fcstcuz %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               filter(date>='2020-12-01') %>%
+               ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+               geom_line(size=1, show.legend=TRUE) +
+               themeplot
+fcstcuzplot
+```
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Hourly Orders
+cuz_hour_multiplier <- calendar %>%
+                       mutate(date=as.Date(mdy(date))) %>%
+                       filter(date>=min_date_cuz & date<=max_date_cuz) %>%
+                       group_by(date) %>%
+                       full_join(hourly_orders %>% filter(city_code=='CUZ') %>% group_by(date,hour), by=c('date'='date')) %>%
+                       ungroup() %>%
+                       select(-city_code,-delivered_orders) %>%
+                       mutate(hour=as.numeric(hour)) %>%
+                       arrange(hour) %>%
+                       group_by(date) %>%
+                       mutate(daily_orders=sum(total_orders)) %>%
+                       mutate(perc_orders=total_orders/sum(total_orders)) %>%
+                       select(-total_orders) %>%
+                       pivot_wider(names_from='hour', values_from='perc_orders') %>%
+                       arrange(date) %>%
+                       select(-"NA") %>%
+                       pivot_longer(cols="0":"23", names_to='hour', values_to='perc_orders') %>%
+                       mutate(hour=as.numeric(hour),
+                              weekday=weekdays(date)
+                              ) %>%
+                       select(date,weekday,hour,daily_orders,perc_orders) %>%
+                       ungroup() %>%
+                       mutate(n=row_number()) %>%
+                       filter(n>=max(n, na.rm=TRUE)-(24*7*6)+1) %>%
+                       group_by(weekday,hour) %>%
+                       summarise(hourly_orders=sum(daily_orders*perc_orders,na.rm=TRUE),
+                                 total_orders=sum(daily_orders,na.rm=TRUE)
+                                 ) %>%
+                       ungroup() %>%
+                       arrange(weekday,hour) %>%
+                       mutate(multiplier=hourly_orders/total_orders) %>%
+                       mutate(multiplier=case_when(multiplier<=0.002 ~ 0, TRUE ~ multiplier)) %>%
+                       select(weekday,hour,multiplier)
+# Hourly Predictions
+fcstcuzhour <- fcstcuz %>%
+               filter(method!='actual') %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               mutate(weekday=weekdays(date)) %>%
+               group_by(weekday) %>%
+               left_join(cuz_hour_multiplier, by=c('weekday'='weekday')) %>%
+               mutate(hour_forecast=round(forecast*multiplier,0)) %>%
+               ungroup() %>%
+               group_by(date,method) %>%
+               mutate(forecast=sum(hour_forecast, na.rm=TRUE)) %>%
+               filter(forecast>0) %>%
+               ungroup() %>%
+               mutate(city='CUZ') %>%
+               select(city,date,weekday,hour,method,hour_forecast) %>%
+               pivot_wider(names_from=method, values_from=hour_forecast)
+```
+
+\newpage
+
+HUA
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Dates
+min_date_hua <- daily_orders %>% filter(city_code=='HUA') %>% summarise(min(date,na.rm=TRUE)) %>% pull()
+max_date_hua <- daily_orders %>% filter(city_code=='HUA') %>% summarise(max(date,na.rm=TRUE)) %>% pull()
+# Orders
+hua_orders <- calendar %>%
+              mutate(date=as.Date(mdy(date))) %>%
+              filter(date>=min_date_hua & date<=max_date_hua) %>%
+              group_by(date) %>%
+              full_join(daily_orders %>% filter(city_code=='HUA') %>% group_by(date), by=c('date'='date')) %>%
+              ungroup() %>%
+              select(-city_code,-delivered_orders)
+hua_orders[is.na(hua_orders)] <- 0
+# Time Series
+hua_orders_ts <- hua_orders %>% select(-date)
+huamsts <- msts(hua_orders_ts, start=decimal_date(as.Date(min_date_hua)), seasonal.periods=c(7,365.25))
+# TRAINING - VALIDATION
+# Training / validation sets
+hua_training <- window(huamsts, start=c(2020,286), end=c(2020,334))
+hua_validation <- window(huamsts, start=c(2020,335))
+# Fit methods
+fit_hua_sn <- snaive(hua_training)
+fit_hua_hw <- HoltWinters(hua_training, beta=FALSE, gamma=FALSE) #Modified Holt-Winters
+fit_hua_ar <- auto.arima(hua_training)
+fit_hua_tb <- tbats(hua_training)
+# Predict
+fcst_hua_sn <- forecast(fit_hua_sn, h=90)
+fcst_hua_hw <- forecast(fit_hua_hw, h=90)
+fcst_hua_ar <- forecast(fit_hua_ar, h=90)
+fcst_hua_tb <- forecast(fit_hua_tb, h=90)
+# Forecasts
+hua_fcst_sn <- forecast(fit_hua_sn, h=length(hua_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(hua_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("SeasonalNaive"="forecast")
+hua_fcst_hw <- forecast(fit_hua_hw, h=length(hua_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(hua_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("HoltWinters"="forecast")
+hua_fcst_ar <- forecast(fit_hua_ar, h=length(hua_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(hua_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("Arima"="forecast")
+hua_fcst_tb <- forecast(fit_hua_tb, h=length(hua_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(hua_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("TBATS"="forecast")
+fcst_hua <- hua_fcst_sn %>%
+            left_join(hua_fcst_hw %>% select(-actual), by=c('date'='date')) %>%
+            left_join(hua_fcst_ar %>% select(-actual), by=c('date'='date')) %>%
+            left_join(hua_fcst_tb %>% select(-actual), by=c('date'='date')) %>%
+            pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-hua-decomp-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Time Series Decomposition - HUA"}
+#Time Series Decomposition
+#decompose_hua <- tslm(huamsts ~ trend + fourier(huamsts, c(3,30)))
+#trend_hua <- coef(decompose_hua)[1] + coef(decompose_hua)['trend']*seq_along(huamsts)
+#components_hua <- cbind(Data=huamsts, Trend=trend_hua, Seasonal=(huamsts-trend-residuals(decompose_hua)), Remainder=residuals(decompose_hua))
+#decomp_hua_plot <- autoplot(components_hua,facet=TRUE)+themeplot
+#decomp_hua_plot
+```
+
+```{r fcst-hua-test-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Training / Test Forecast - HUA"}
+# Plot
+fcst_hua_plot <- fcst_hua %>%
+                 mutate(date=as.Date(ymd(date))) %>%
+                 filter(date>='2020-10-01') %>%
+                 ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+                 geom_line(size=1, show.legend=TRUE) +
+                 themeplot
+fcst_hua_plot
+```
+
+```{r fcst-hua-accu-tab, message=FALSE, echo=FALSE}
+# Accuracy
+accu_hua_sn <- fcst_hua_sn %>% accuracy() %>% as.data.frame() %>% mutate(model="Seasonal Naive")
+accu_hua_hw <- fcst_hua_hw %>% accuracy() %>% as.data.frame() %>% mutate(model="Holt-Winters")
+accu_hua_ar <- fcst_hua_ar %>% accuracy() %>% as.data.frame() %>% mutate(model="Auto Arima")
+accu_hua_tb <- fcst_hua_tb %>% accuracy() %>% as.data.frame() %>% mutate(model="TBATS")
+accu_hua <- rbind(accu_hua_sn,accu_hua_hw,accu_hua_ar,accu_hua_tb) %>% select(model,everything())
+kable(accu_hua, caption='Accuracy Forecast - HUA')
+```
+
+\newpage
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# FUTURE
+# Fit methods
+fithuasn <- snaive(huamsts)
+fithuahw <- HoltWinters(huamsts, beta=FALSE, gamma=FALSE) #Modified Holt-Winters
+fithuaar <- auto.arima(huamsts)
+fithuatb <- tbats(huamsts)
+# Forecasts
+huafcstsn <- forecast(fithuasn, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(hua_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("SeasonalNaive"="forecast")
+huafcsthw <- forecast(fithuahw, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(hua_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("HoltWinters"="forecast")
+huafcstar <- forecast(fithuaar, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(hua_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("Arima"="forecast")
+huafcsttb <- forecast(fithuatb, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(hua_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("TBATS"="forecast")
+fcsthua <- huafcstsn %>%
+           left_join(huafcsthw %>% select(-actual), by=c('date'='date')) %>%
+           left_join(huafcstar %>% select(-actual), by=c('date'='date')) %>%
+           left_join(huafcsttb %>% select(-actual), by=c('date'='date')) %>%
+           pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-hua-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Forecast - HUA"}
+# Plot
+fcsthuaplot <- fcsthua %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               filter(date>='2020-12-01') %>%
+               ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+               geom_line(size=1, show.legend=TRUE) +
+               themeplot
+fcsthuaplot
+```
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Hourly Orders
+hua_hour_multiplier <- calendar %>%
+                       mutate(date=as.Date(mdy(date))) %>%
+                       filter(date>=min_date_hua & date<=max_date_hua) %>%
+                       group_by(date) %>%
+                       full_join(hourly_orders %>% filter(city_code=='HUA') %>% group_by(date,hour), by=c('date'='date')) %>%
+                       ungroup() %>%
+                       select(-city_code,-delivered_orders) %>%
+                       mutate(hour=as.numeric(hour)) %>%
+                       arrange(hour) %>%
+                       group_by(date) %>%
+                       mutate(daily_orders=sum(total_orders)) %>%
+                       mutate(perc_orders=total_orders/sum(total_orders)) %>%
+                       select(-total_orders) %>%
+                       pivot_wider(names_from='hour', values_from='perc_orders') %>%
+                       arrange(date) %>%
+                       #select(-"NA") %>%
+                       pivot_longer(cols="8":"22", names_to='hour', values_to='perc_orders') %>%
+                       mutate(hour=as.numeric(hour),
+                              weekday=weekdays(date)
+                              ) %>%
+                       select(date,weekday,hour,daily_orders,perc_orders) %>%
+                       ungroup() %>%
+                       mutate(n=row_number()) %>%
+                       filter(n>=max(n, na.rm=TRUE)-(24*7*6)+1) %>%
+                       group_by(weekday,hour) %>%
+                       summarise(hourly_orders=sum(daily_orders*perc_orders,na.rm=TRUE),
+                                 total_orders=sum(daily_orders,na.rm=TRUE)
+                                 ) %>%
+                       ungroup() %>%
+                       arrange(weekday,hour) %>%
+                       mutate(multiplier=hourly_orders/total_orders) %>%
+                       mutate(multiplier=case_when(multiplier<=0.002 ~ 0, TRUE ~ multiplier)) %>%
+                       select(weekday,hour,multiplier)
+# Hourly Predictions
+fcsthuahour <- fcsthua %>%
+               filter(method!='actual') %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               mutate(weekday=weekdays(date)) %>%
+               group_by(weekday) %>%
+               left_join(hua_hour_multiplier, by=c('weekday'='weekday')) %>%
+               mutate(hour_forecast=round(forecast*multiplier,0)) %>%
+               ungroup() %>%
+               group_by(date,method) %>%
+               mutate(forecast=sum(hour_forecast, na.rm=TRUE)) %>%
+               filter(forecast>0) %>%
+               ungroup() %>%
+               mutate(city='HUA') %>%
+               select(city,date,weekday,hour,method,hour_forecast) %>%
+               pivot_wider(names_from=method, values_from=hour_forecast)
+```
+
+\newpage
+
+CHB
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Dates
+min_date_chb <- daily_orders %>% filter(city_code=='CHB') %>% summarise(min(date,na.rm=TRUE)) %>% pull()
+max_date_chb <- daily_orders %>% filter(city_code=='CHB') %>% summarise(max(date,na.rm=TRUE)) %>% pull()
+# Orders
+chb_orders <- calendar %>%
+              mutate(date=as.Date(mdy(date))) %>%
+              filter(date>=min_date_chb & date<=max_date_chb) %>%
+              group_by(date) %>%
+              full_join(daily_orders %>% filter(city_code=='CHB') %>% group_by(date), by=c('date'='date')) %>%
+              ungroup() %>%
+              select(-city_code,-delivered_orders)
+chb_orders[is.na(chb_orders)] <- 0
+# Time Series
+chb_orders_ts <- chb_orders %>% select(-date)
+chbmsts <- msts(chb_orders_ts, start=decimal_date(as.Date(min_date_chb)), seasonal.periods=c(7,365.25))
+# TRAINING - VALIDATION
+# Training / validation sets
+chb_training <- window(chbmsts, start=c(2020,314), end=c(2020,348))
+chb_validation <- window(chbmsts, start=c(2020,349))
+# Fit methods
+fit_chb_sn <- snaive(chb_training)
+fit_chb_hw <- HoltWinters(chb_training, beta=FALSE, gamma=FALSE) #Modified Holt-Winters
+fit_chb_ar <- auto.arima(chb_training)
+fit_chb_tb <- tbats(chb_training)
+# Predict
+fcst_chb_sn <- forecast(fit_chb_sn, h=90)
+fcst_chb_hw <- forecast(fit_chb_hw, h=90)
+fcst_chb_ar <- forecast(fit_chb_ar, h=90)
+fcst_chb_tb <- forecast(fit_chb_tb, h=90)
+# Forecasts
+chb_fcst_sn <- forecast(fit_chb_sn, h=length(chb_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(chb_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("SeasonalNaive"="forecast")
+chb_fcst_hw <- forecast(fit_chb_hw, h=length(chb_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(chb_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("HoltWinters"="forecast")
+chb_fcst_ar <- forecast(fit_chb_ar, h=length(chb_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(chb_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("Arima"="forecast")
+chb_fcst_tb <- forecast(fit_chb_tb, h=length(chb_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(chb_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("TBATS"="forecast")
+fcst_chb <- chb_fcst_sn %>%
+            left_join(chb_fcst_hw %>% select(-actual), by=c('date'='date')) %>%
+            left_join(chb_fcst_ar %>% select(-actual), by=c('date'='date')) %>%
+            left_join(chb_fcst_tb %>% select(-actual), by=c('date'='date')) %>%
+            pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-chb-decomp-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Time Series Decomposition - CHB"}
+#Time Series Decomposition
+#decompose_chb <- tslm(chbmsts ~ trend + fourier(chbmsts, c(3,30)))
+#trend_chb <- coef(decompose_chb)[1] + coef(decompose_chb)['trend']*seq_along(chbmsts)
+#components_chb <- cbind(Data=chbmsts, Trend=trend_chb, Seasonal=(chbmsts-trend-residuals(decompose_chb)), Remainder=residuals(decompose_chb))
+#decomp_chb_plot <- autoplot(components_chb,facet=TRUE)+themeplot
+#decomp_chb_plot
+```
+
+```{r fcst-chb-test-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Training / Test Forecast - CHB"}
+# Plot
+fcst_chb_plot <- fcst_chb %>%
+                 mutate(date=as.Date(ymd(date))) %>%
+                 filter(date>='2020-10-01') %>%
+                 ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+                 geom_line(size=1, show.legend=TRUE) +
+                 themeplot
+fcst_chb_plot
+```
+
+```{r fcst-chb-accu-tab, message=FALSE, echo=FALSE}
+# Accuracy
+accu_chb_sn <- fcst_chb_sn %>% accuracy() %>% as.data.frame() %>% mutate(model="Seasonal Naive")
+accu_chb_hw <- fcst_chb_hw %>% accuracy() %>% as.data.frame() %>% mutate(model="Holt-Winters")
+accu_chb_ar <- fcst_chb_ar %>% accuracy() %>% as.data.frame() %>% mutate(model="Auto Arima")
+accu_chb_tb <- fcst_chb_tb %>% accuracy() %>% as.data.frame() %>% mutate(model="TBATS")
+accu_chb <- rbind(accu_chb_sn,accu_chb_hw,accu_chb_ar,accu_chb_tb) %>% select(model,everything())
+kable(accu_chb, caption='Accuracy Forecast - CHB')
+```
+
+\newpage
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# FUTURE
+# Fit methods
+fitchbsn <- snaive(chbmsts)
+fitchbhw <- HoltWinters(chbmsts, beta=FALSE, gamma=FALSE) #Modified Holt-Winters
+fitchbar <- auto.arima(chbmsts)
+fitchbtb <- tbats(chbmsts)
+# Forecasts
+chbfcstsn <- forecast(fitchbsn, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(chb_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("SeasonalNaive"="forecast")
+chbfcsthw <- forecast(fitchbhw, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(chb_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("HoltWinters"="forecast")
+chbfcstar <- forecast(fitchbar, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(chb_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("Arima"="forecast")
+chbfcsttb <- forecast(fitchbtb, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(chb_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("TBATS"="forecast")
+fcstchb <- chbfcstsn %>%
+           left_join(chbfcsthw %>% select(-actual), by=c('date'='date')) %>%
+           left_join(chbfcstar %>% select(-actual), by=c('date'='date')) %>%
+           left_join(chbfcsttb %>% select(-actual), by=c('date'='date')) %>%
+           pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-chb-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Forecast - CHB"}
+# Plot
+fcstchbplot <- fcstchb %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               filter(date>='2020-12-01') %>%
+               ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+               geom_line(size=1, show.legend=TRUE) +
+               themeplot
+fcstchbplot
+```
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Hourly Orders
+chb_hour_multiplier <- calendar %>%
+                       mutate(date=as.Date(mdy(date))) %>%
+                       filter(date>=min_date_chb & date<=max_date_chb) %>%
+                       group_by(date) %>%
+                       full_join(hourly_orders %>% filter(city_code=='CHB') %>% group_by(date,hour), by=c('date'='date')) %>%
+                       ungroup() %>%
+                       select(-city_code,-delivered_orders) %>%
+                       mutate(hour=as.numeric(hour)) %>%
+                       arrange(hour) %>%
+                       group_by(date) %>%
+                       mutate(daily_orders=sum(total_orders)) %>%
+                       mutate(perc_orders=total_orders/sum(total_orders)) %>%
+                       select(-total_orders) %>%
+                       pivot_wider(names_from='hour', values_from='perc_orders') %>%
+                       arrange(date) %>%
+                       #select(-"NA") %>%
+                       pivot_longer(cols="8":"22", names_to='hour', values_to='perc_orders') %>%
+                       mutate(hour=as.numeric(hour),
+                              weekday=weekdays(date)
+                              ) %>%
+                       select(date,weekday,hour,daily_orders,perc_orders) %>%
+                       ungroup() %>%
+                       mutate(n=row_number()) %>%
+                       filter(n>=max(n, na.rm=TRUE)-(24*7*6)+1) %>%
+                       group_by(weekday,hour) %>%
+                       summarise(hourly_orders=sum(daily_orders*perc_orders,na.rm=TRUE),
+                                 total_orders=sum(daily_orders,na.rm=TRUE)
+                                 ) %>%
+                       ungroup() %>%
+                       arrange(weekday,hour) %>%
+                       mutate(multiplier=hourly_orders/total_orders) %>%
+                       mutate(multiplier=case_when(multiplier<=0.002 ~ 0, TRUE ~ multiplier)) %>%
+                       select(weekday,hour,multiplier)
+# Hourly Predictions
+fcstchbhour <- fcstchb %>%
+               filter(method!='actual') %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               mutate(weekday=weekdays(date)) %>%
+               group_by(weekday) %>%
+               left_join(chb_hour_multiplier, by=c('weekday'='weekday')) %>%
+               mutate(hour_forecast=round(forecast*multiplier,0)) %>%
+               ungroup() %>%
+               group_by(date,method) %>%
+               mutate(forecast=sum(hour_forecast, na.rm=TRUE)) %>%
+               filter(forecast>0) %>%
+               ungroup() %>%
+               mutate(city='CHB') %>%
+               select(city,date,weekday,hour,method,hour_forecast) %>%
+               pivot_wider(names_from=method, values_from=hour_forecast)
+```
+
+\newpage
+
+ICA
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Dates
+min_date_ica <- daily_orders %>% filter(city_code=='ICA') %>% summarise(min(date,na.rm=TRUE)) %>% pull()
+max_date_ica <- daily_orders %>% filter(city_code=='ICA') %>% summarise(max(date,na.rm=TRUE)) %>% pull()
+# Orders
+ica_orders <- calendar %>%
+              mutate(date=as.Date(mdy(date))) %>%
+              filter(date>=min_date_ica & date<=max_date_ica) %>%
+              group_by(date) %>%
+              full_join(daily_orders %>% filter(city_code=='ICA') %>% group_by(date), by=c('date'='date')) %>%
+              ungroup() %>%
+              select(-city_code,-delivered_orders)
+ica_orders[is.na(ica_orders)] <- 0
+# Time Series
+ica_orders_ts <- ica_orders %>% select(-date)
+icamsts <- msts(ica_orders_ts, start=decimal_date(as.Date(min_date_ica)), seasonal.periods=c(7,365.25))
+# TRAINING - VALIDATION
+# Training / validation sets
+ica_training <- window(icamsts, start=c(2019,315), end=c(2020,299))
+ica_validation <- window(icamsts, start=c(2020,300))
+# Fit methods
+fit_ica_sn <- snaive(ica_training)
+fit_ica_hw <- HoltWinters(ica_training, beta=FALSE, gamma=FALSE) #Modified Holt-Winters
+fit_ica_ar <- auto.arima(ica_training)
+fit_ica_tb <- tbats(ica_training)
+# Predict
+fcst_ica_sn <- forecast(fit_ica_sn, h=90)
+fcst_ica_hw <- forecast(fit_ica_hw, h=90)
+fcst_ica_ar <- forecast(fit_ica_ar, h=90)
+fcst_ica_tb <- forecast(fit_ica_tb, h=90)
+# Forecasts
+ica_fcst_sn <- forecast(fit_ica_sn, h=length(ica_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(ica_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("SeasonalNaive"="forecast")
+ica_fcst_hw <- forecast(fit_ica_hw, h=length(ica_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(ica_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("HoltWinters"="forecast")
+ica_fcst_ar <- forecast(fit_ica_ar, h=length(ica_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(ica_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("Arima"="forecast")
+ica_fcst_tb <- forecast(fit_ica_tb, h=length(ica_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(ica_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("TBATS"="forecast")
+fcst_ica <- ica_fcst_sn %>%
+            left_join(ica_fcst_hw %>% select(-actual), by=c('date'='date')) %>%
+            left_join(ica_fcst_ar %>% select(-actual), by=c('date'='date')) %>%
+            left_join(ica_fcst_tb %>% select(-actual), by=c('date'='date')) %>%
+            pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-ica-decomp-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Time Series Decomposition - ICA"}
+#Time Series Decomposition
+#decompose_ica <- tslm(icamsts ~ trend + fourier(icamsts, c(3,30)))
+#trend_ica <- coef(decompose_ica)[1] + coef(decompose_ica)['trend']*seq_along(icamsts)
+#components_ica <- cbind(Data=icamsts, Trend=trend_ica, Seasonal=(icamsts-trend-residuals(decompose_ica)), Remainder=residuals(decompose_ica))
+#decomp_ica_plot <- autoplot(components_ica,facet=TRUE)+themeplot
+#decomp_ica_plot
+```
+
+```{r fcst-ica-test-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Training / Test Forecast - ICA"}
+# Plot
+fcst_ica_plot <- fcst_ica %>%
+                 mutate(date=as.Date(ymd(date))) %>%
+                 filter(date>='2020-10-01') %>%
+                 ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+                 geom_line(size=1, show.legend=TRUE) +
+                 themeplot
+fcst_ica_plot
+```
+
+```{r fcst-ica-accu-tab, message=FALSE, echo=FALSE}
+# Accuracy
+accu_ica_sn <- fcst_ica_sn %>% accuracy() %>% as.data.frame() %>% mutate(model="Seasonal Naive")
+accu_ica_hw <- fcst_ica_hw %>% accuracy() %>% as.data.frame() %>% mutate(model="Holt-Winters")
+accu_ica_ar <- fcst_ica_ar %>% accuracy() %>% as.data.frame() %>% mutate(model="Auto Arima")
+accu_ica_tb <- fcst_ica_tb %>% accuracy() %>% as.data.frame() %>% mutate(model="TBATS")
+accu_ica <- rbind(accu_ica_sn,accu_ica_hw,accu_ica_ar,accu_ica_tb) %>% select(model,everything())
+kable(accu_ica, caption='Accuracy Forecast - ICA')
+```
+
+\newpage
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# FUTURE
+# Fit methods
+fiticasn <- snaive(icamsts)
+fiticahw <- HoltWinters(icamsts, beta=FALSE, gamma=FALSE) #Modified Holt-Winters
+fiticaar <- auto.arima(icamsts)
+fiticatb <- tbats(icamsts)
+# Forecasts
+icafcstsn <- forecast(fiticasn, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(ica_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("SeasonalNaive"="forecast")
+icafcsthw <- forecast(fiticahw, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(ica_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("HoltWinters"="forecast")
+icafcstar <- forecast(fiticaar, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(ica_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("Arima"="forecast")
+icafcsttb <- forecast(fiticatb, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(ica_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("TBATS"="forecast")
+fcstica <- icafcstsn %>%
+           left_join(icafcsthw %>% select(-actual), by=c('date'='date')) %>%
+           left_join(icafcstar %>% select(-actual), by=c('date'='date')) %>%
+           left_join(icafcsttb %>% select(-actual), by=c('date'='date')) %>%
+           pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-ica-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Forecast - ICA"}
+# Plot
+fcsticaplot <- fcstica %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               filter(date>='2020-12-01') %>%
+               ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+               geom_line(size=1, show.legend=TRUE) +
+               themeplot
+fcsticaplot
+```
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Hourly Orders
+ica_hour_multiplier <- calendar %>%
+                       mutate(date=as.Date(mdy(date))) %>%
+                       filter(date>=min_date_ica & date<=max_date_ica) %>%
+                       group_by(date) %>%
+                       full_join(hourly_orders %>% filter(city_code=='ICA') %>% group_by(date,hour), by=c('date'='date')) %>%
+                       ungroup() %>%
+                       select(-city_code,-delivered_orders) %>%
+                       mutate(hour=as.numeric(hour)) %>%
+                       arrange(hour) %>%
+                       group_by(date) %>%
+                       mutate(daily_orders=sum(total_orders)) %>%
+                       mutate(perc_orders=total_orders/sum(total_orders)) %>%
+                       select(-total_orders) %>%
+                       pivot_wider(names_from='hour', values_from='perc_orders') %>%
+                       arrange(date) %>%
+                       select(-"NA") %>%
+                       pivot_longer(cols="8":"23", names_to='hour', values_to='perc_orders') %>%
+                       mutate(hour=as.numeric(hour),
+                              weekday=weekdays(date)
+                              ) %>%
+                       select(date,weekday,hour,daily_orders,perc_orders) %>%
+                       ungroup() %>%
+                       mutate(n=row_number()) %>%
+                       filter(n>=max(n, na.rm=TRUE)-(24*7*6)+1) %>%
+                       group_by(weekday,hour) %>%
+                       summarise(hourly_orders=sum(daily_orders*perc_orders,na.rm=TRUE),
+                                 total_orders=sum(daily_orders,na.rm=TRUE)
+                                 ) %>%
+                       ungroup() %>%
+                       arrange(weekday,hour) %>%
+                       mutate(multiplier=hourly_orders/total_orders) %>%
+                       mutate(multiplier=case_when(multiplier<=0.002 ~ 0, TRUE ~ multiplier)) %>%
+                       select(weekday,hour,multiplier)
+# Hourly Predictions
+fcsticahour <- fcstica %>%
+               filter(method!='actual') %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               mutate(weekday=weekdays(date)) %>%
+               group_by(weekday) %>%
+               left_join(ica_hour_multiplier, by=c('weekday'='weekday')) %>%
+               mutate(hour_forecast=round(forecast*multiplier,0)) %>%
+               ungroup() %>%
+               group_by(date,method) %>%
+               mutate(forecast=sum(hour_forecast, na.rm=TRUE)) %>%
+               filter(forecast>0) %>%
+               ungroup() %>%
+               mutate(city='ICA') %>%
+               select(city,date,weekday,hour,method,hour_forecast) %>%
+               pivot_wider(names_from=method, values_from=hour_forecast)
+```
+
+\newpage
+
+LMS
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Dates
+min_date_lms <- daily_orders %>% filter(city_code=='LMS') %>% summarise(min(date,na.rm=TRUE)) %>% pull()
+max_date_lms <- daily_orders %>% filter(city_code=='LMS') %>% summarise(max(date,na.rm=TRUE)) %>% pull()
+# Orders
+lms_orders <- calendar %>%
+              mutate(date=as.Date(mdy(date))) %>%
+              filter(date>=min_date_lms & date<=max_date_lms) %>%
+              group_by(date) %>%
+              full_join(daily_orders %>% filter(city_code=='LMS') %>% group_by(date), by=c('date'='date')) %>%
+              ungroup() %>%
+              select(-city_code,-delivered_orders)
+lms_orders[is.na(lms_orders)] <- 0
+# Time Series
+lms_orders_ts <- lms_orders %>% select(-date)
+lmsmsts <- msts(lms_orders_ts, start=decimal_date(as.Date(min_date_lms)), seasonal.periods=c(7,365.25))
+# TRAINING - VALIDATION
+# Training / validation sets
+lms_training <- window(lmsmsts, start=c(2019,21), end=c(2020,299))
+lms_validation <- window(lmsmsts, start=c(2020,300))
+# Fit methods
+fit_lms_sn <- snaive(lms_training)
+fit_lms_hw <- HoltWinters(lms_training, beta=FALSE, gamma=FALSE) #Modified Holt-Winters
+fit_lms_ar <- auto.arima(lms_training)
+fit_lms_tb <- tbats(lms_training)
+# Predict
+fcst_lms_sn <- forecast(fit_lms_sn, h=90)
+fcst_lms_hw <- forecast(fit_lms_hw, h=90)
+fcst_lms_ar <- forecast(fit_lms_ar, h=90)
+fcst_lms_tb <- forecast(fit_lms_tb, h=90)
+# Forecasts
+lms_fcst_sn <- forecast(fit_lms_sn, h=length(lms_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(lms_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("SeasonalNaive"="forecast")
+lms_fcst_hw <- forecast(fit_lms_hw, h=length(lms_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(lms_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("HoltWinters"="forecast")
+lms_fcst_ar <- forecast(fit_lms_ar, h=length(lms_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(lms_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("Arima"="forecast")
+lms_fcst_tb <- forecast(fit_lms_tb, h=length(lms_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(lms_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("TBATS"="forecast")
+fcst_lms <- lms_fcst_sn %>%
+            left_join(lms_fcst_hw %>% select(-actual), by=c('date'='date')) %>%
+            left_join(lms_fcst_ar %>% select(-actual), by=c('date'='date')) %>%
+            left_join(lms_fcst_tb %>% select(-actual), by=c('date'='date')) %>%
+            pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-lms-decomp-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Time Series Decomposition - LMS"}
+#Time Series Decomposition
+#decompose_lms <- tslm(lmsmsts ~ trend + fourier(lmsmsts, c(3,180)))
+#trend_lms <- coef(decompose_lms)[1] + coef(decompose_lms)['trend']*seq_along(lmsmsts)
+#components_lms <- cbind(Data=lmsmsts, Trend=trend_lms, Seasonal=(lmsmsts-trend-residuals(decompose_lms)), Remainder=residuals(decompose_lms))
+#decomp_lms_plot <- autoplot(components_lms,facet=TRUE)+themeplot
+#decomp_lms_plot
+```
+
+```{r fcst-lms-test-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Training / Test Forecast - LMS"}
+# Plot
+fcst_lms_plot <- fcst_lms %>%
+                 mutate(date=as.Date(ymd(date))) %>%
+                 filter(date>='2020-10-01') %>%
+                 ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+                 geom_line(size=1, show.legend=TRUE) +
+                 themeplot
+fcst_lms_plot
+```
+
+```{r fcst-lms-accu-tab, message=FALSE, echo=FALSE}
+# Accuracy
+accu_lms_sn <- fcst_lms_sn %>% accuracy() %>% as.data.frame() %>% mutate(model="Seasonal Naive")
+accu_lms_hw <- fcst_lms_hw %>% accuracy() %>% as.data.frame() %>% mutate(model="Holt-Winters")
+accu_lms_ar <- fcst_lms_ar %>% accuracy() %>% as.data.frame() %>% mutate(model="Auto Arima")
+accu_lms_tb <- fcst_lms_tb %>% accuracy() %>% as.data.frame() %>% mutate(model="TBATS")
+accu_lms <- rbind(accu_lms_sn,accu_lms_hw,accu_lms_ar,accu_lms_tb) %>% select(model,everything())
+kable(accu_lms, caption='Accuracy Forecast - LMS')
+```
+
+\newpage
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# FUTURE
+# Fit methods
+fitlmssn <- snaive(lmsmsts)
+fitlmshw <- HoltWinters(lmsmsts, beta=FALSE, gamma=FALSE) #Modified Holt-Winters
+fitlmsar <- auto.arima(lmsmsts)
+fitlmstb <- tbats(lmsmsts)
+# Forecasts
+lmsfcstsn <- forecast(fitlmssn, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(lms_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("SeasonalNaive"="forecast")
+lmsfcsthw <- forecast(fitlmshw, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(lms_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("HoltWinters"="forecast")
+lmsfcstar <- forecast(fitlmsar, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(lms_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("Arima"="forecast")
+lmsfcsttb <- forecast(fitlmstb, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(lms_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("TBATS"="forecast")
+fcstlms <- lmsfcstsn %>%
+           left_join(lmsfcsthw %>% select(-actual), by=c('date'='date')) %>%
+           left_join(lmsfcstar %>% select(-actual), by=c('date'='date')) %>%
+           left_join(lmsfcsttb %>% select(-actual), by=c('date'='date')) %>%
+           pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-lms-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Forecast - LMS"}
+# Plot
+fcstlmsplot <- fcstlms %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               filter(date>='2020-12-01') %>%
+               ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+               geom_line(size=1, show.legend=TRUE) +
+               themeplot
+fcstlmsplot
+```
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Hourly Orders
+lms_hour_multiplier <- calendar %>%
+                       mutate(date=as.Date(mdy(date))) %>%
+                       filter(date>=min_date_lms & date<=max_date_lms) %>%
+                       group_by(date) %>%
+                       full_join(hourly_orders %>% filter(city_code=='LMS') %>% group_by(date,hour), by=c('date'='date')) %>%
+                       ungroup() %>%
+                       select(-city_code,-delivered_orders) %>%
+                       mutate(hour=as.numeric(hour)) %>%
+                       arrange(hour) %>%
+                       group_by(date) %>%
+                       mutate(daily_orders=sum(total_orders)) %>%
+                       mutate(perc_orders=total_orders/sum(total_orders)) %>%
+                       select(-total_orders) %>%
+                       pivot_wider(names_from='hour', values_from='perc_orders') %>%
+                       arrange(date) %>%
+                       select(-"NA") %>%
+                       pivot_longer(cols="0":"23", names_to='hour', values_to='perc_orders') %>%
+                       mutate(hour=as.numeric(hour),
+                              weekday=weekdays(date)
+                              ) %>%
+                       select(date,weekday,hour,daily_orders,perc_orders) %>%
+                       ungroup() %>%
+                       mutate(n=row_number()) %>%
+                       filter(n>=max(n, na.rm=TRUE)-(24*7*3)+1) %>%
+                       group_by(weekday,hour) %>%
+                       summarise(hourly_orders=sum(daily_orders*perc_orders,na.rm=TRUE),
+                                 total_orders=sum(daily_orders,na.rm=TRUE)
+                                 ) %>%
+                       ungroup() %>%
+                       arrange(weekday,hour) %>%
+                       mutate(multiplier=hourly_orders/total_orders) %>%
+                       mutate(multiplier=case_when(multiplier<=0.002 ~ 0, TRUE ~ multiplier)) %>%
+                       select(weekday,hour,multiplier)
+# Hourly Predictions
+fcstlmshour <- fcstlms %>%
+               filter(method!='actual') %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               mutate(weekday=weekdays(date)) %>%
+               group_by(weekday) %>%
+               left_join(lms_hour_multiplier, by=c('weekday'='weekday')) %>%
+               mutate(hour_forecast=round(forecast*multiplier,0)) %>%
+               ungroup() %>%
+               group_by(date,method) %>%
+               mutate(forecast=sum(hour_forecast, na.rm=TRUE)) %>%
+               filter(forecast>0) %>%
+               ungroup() %>%
+               mutate(city='LMS') %>%
+               select(city,date,weekday,hour,method,hour_forecast) %>%
+               pivot_wider(names_from=method, values_from=hour_forecast)
+```
+
+\newpage
+
+ASI
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Dates
+min_date_asi <- daily_orders %>% filter(city_code=='ASI') %>% summarise(min(date,na.rm=TRUE)) %>% pull()
+max_date_asi <- daily_orders %>% filter(city_code=='ASI') %>% summarise(max(date,na.rm=TRUE)) %>% pull()
+# Orders
+asi_orders <- calendar %>%
+              mutate(date=as.Date(mdy(date))) %>%
+              filter(date>=min_date_asi & date<=max_date_asi) %>%
+              group_by(date) %>%
+              full_join(daily_orders %>% filter(city_code=='ASI') %>% group_by(date), by=c('date'='date')) %>%
+              ungroup() %>%
+              select(-city_code,-delivered_orders)
+asi_orders[is.na(asi_orders)] <- 0
+# Time Series
+asi_orders_ts <- asi_orders %>% select(-date)
+asimsts <- msts(asi_orders_ts, start=decimal_date(as.Date(min_date_asi)), seasonal.periods=c(7,365.25))
+# TRAINING - VALIDATION
+# Training / validation sets
+asi_training <- window(asimsts, start=c(2018,365), end=c(2020,299))
+asi_validation <- window(asimsts, start=c(2020,300))
+# Fit methods
+fit_asi_sn <- snaive(asi_training)
+fit_asi_hw <- HoltWinters(asi_training, beta=FALSE, gamma=FALSE) #Modified Holt-Winters
+fit_asi_ar <- auto.arima(asi_training)
+fit_asi_tb <- tbats(asi_training)
+# Predict
+fcst_asi_sn <- forecast(fit_asi_sn, h=90)
+fcst_asi_hw <- forecast(fit_asi_hw, h=90)
+fcst_asi_ar <- forecast(fit_asi_ar, h=90)
+fcst_asi_tb <- forecast(fit_asi_tb, h=90)
+# Forecasts
+asi_fcst_sn <- forecast(fit_asi_sn, h=length(asi_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(asi_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("SeasonalNaive"="forecast")
+asi_fcst_hw <- forecast(fit_asi_hw, h=length(asi_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(asi_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("HoltWinters"="forecast")
+asi_fcst_ar <- forecast(fit_asi_ar, h=length(asi_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(asi_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("Arima"="forecast")
+asi_fcst_tb <- forecast(fit_asi_tb, h=length(asi_validation)) %>%
+               sw_sweep(.) %>% 
+               pivot_wider(names_from="key",values_from="total_orders") %>%
+               mutate(index=index*365.243) %>%
+               mutate(date=as.Date(index, origin="0000-01-01")) %>%
+               select(date,actual,forecast) %>%
+               mutate(forecast=round(forecast,0)) %>%
+               mutate(date=as.character(date)) %>%
+               group_by(date) %>%
+               left_join(asi_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+               mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+               select(date:forecast) %>%
+               rename("TBATS"="forecast")
+fcst_asi <- asi_fcst_sn %>%
+            left_join(asi_fcst_hw %>% select(-actual), by=c('date'='date')) %>%
+            left_join(asi_fcst_ar %>% select(-actual), by=c('date'='date')) %>%
+            left_join(asi_fcst_tb %>% select(-actual), by=c('date'='date')) %>%
+            pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-asi-test-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Training / Test Forecast - ASI"}
+# Plot
+fcst_asi_plot <- fcst_asi %>%
+                 mutate(date=as.Date(ymd(date))) %>%
+                 filter(date>='2020-10-01') %>%
+                 ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+                 geom_line(size=1, show.legend=TRUE) +
+                 themeplot
+fcst_asi_plot
+```
+
+```{r fcst-asi-accu-tab, message=FALSE, echo=FALSE}
+# Accuracy
+accu_asi_sn <- fcst_asi_sn %>% accuracy() %>% as.data.frame() %>% mutate(model="Seasonal Naive")
+accu_asi_hw <- fcst_asi_hw %>% accuracy() %>% as.data.frame() %>% mutate(model="Holt-Winters")
+accu_asi_ar <- fcst_asi_ar %>% accuracy() %>% as.data.frame() %>% mutate(model="Auto Arima")
+accu_asi_tb <- fcst_asi_tb %>% accuracy() %>% as.data.frame() %>% mutate(model="TBATS")
+accu_asi <- rbind(accu_asi_sn,accu_asi_hw,accu_asi_ar,accu_asi_tb) %>% select(model,everything())
+kable(accu_asi, caption='Accuracy Forecast - ASI')
+```
+
+\newpage
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# FUTURE
+# Fit methods
+fitasisn <- snaive(asimsts)
+fitasihw <- HoltWinters(asimsts, beta=FALSE, gamma=FALSE) #Modified Holt-Winters
+fitasiar <- auto.arima(asimsts)
+fitasitb <- tbats(asimsts)
+# Forecasts
+asifcstsn <- forecast(fitasisn, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(asi_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("SeasonalNaive"="forecast")
+asifcsthw <- forecast(fitasihw, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(asi_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("HoltWinters"="forecast")
+asifcstar <- forecast(fitasiar, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(asi_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("Arima"="forecast")
+asifcsttb <- forecast(fitasitb, h=14) %>%
+             sw_sweep(.) %>% 
+             pivot_wider(names_from="key",values_from="total_orders") %>%
+             mutate(index=index*365.243) %>%
+             mutate(date=as.Date(index, origin="0000-01-01")) %>%
+             select(date,actual,forecast) %>%
+             mutate(forecast=round(forecast,0)) %>%
+             mutate(date=as.character(date)) %>%
+             group_by(date) %>%
+             left_join(asi_orders %>% mutate(date=as.character(date)) %>% group_by(date), by=c('date'='date')) %>%
+             mutate(actual=case_when(is.na(actual) ~ total_orders, TRUE ~ actual)) %>%
+             select(date:forecast) %>%
+             rename("TBATS"="forecast")
+fcstasi <- asifcstsn %>%
+           left_join(asifcsthw %>% select(-actual), by=c('date'='date')) %>%
+           left_join(asifcstar %>% select(-actual), by=c('date'='date')) %>%
+           left_join(asifcsttb %>% select(-actual), by=c('date'='date')) %>%
+           pivot_longer(cols="actual":"TBATS", names_to="method", values_to="forecast")
+```
+
+```{r fcst-asi-decomp-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Time Series Decomposition - ASI"}
+#Time Series Decomposition
+#decompose_asi <- tslm(asimsts ~ trend + fourier(asimsts, c(3,30)))
+#trend_asi <- coef(decompose_asi)[1] + coef(decompose_asi)['trend']*seq_along(asimsts)
+#components_asi <- cbind(Data=asimsts, Trend=trend_asi, Seasonal=(asimsts-trend-residuals(decompose_asi)), Remainder=residuals(decompose_asi))
+#decomp_asi_plot <- autoplot(components_asi,facet=TRUE)+themeplot
+#decomp_asi_plot
+```
+
+```{r fcst-asi-plot, message=FALSE, warning=FALSE, echo=FALSE, fig.cap="Forecast - ASI"}
+# Plot
+fcstasiplot <- fcstasi %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               filter(date>='2020-12-01') %>%
+               ggplot(aes(x=date, y=forecast, fill=method, color=method)) +
+               geom_line(size=1, show.legend=TRUE) +
+               themeplot
+fcstasiplot
+```
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# Hourly Orders
+asi_hour_multiplier <- calendar %>%
+                       mutate(date=as.Date(mdy(date))) %>%
+                       filter(date>=min_date_asi & date<=max_date_asi) %>%
+                       group_by(date) %>%
+                       full_join(hourly_orders %>% filter(city_code=='ASI') %>% group_by(date,hour), by=c('date'='date')) %>%
+                       ungroup() %>%
+                       select(-city_code,-delivered_orders) %>%
+                       mutate(hour=as.numeric(hour)) %>%
+                       arrange(hour) %>%
+                       group_by(date) %>%
+                       mutate(daily_orders=sum(total_orders)) %>%
+                       mutate(perc_orders=total_orders/sum(total_orders)) %>%
+                       select(-total_orders) %>%
+                       pivot_wider(names_from='hour', values_from='perc_orders') %>%
+                       arrange(date) %>%
+                       select(-"NA") %>%
+                       pivot_longer(cols="0":"23", names_to='hour', values_to='perc_orders') %>%
+                       mutate(hour=as.numeric(hour),
+                              weekday=weekdays(date)
+                              ) %>%
+                       select(date,weekday,hour,daily_orders,perc_orders) %>%
+                       ungroup() %>%
+                       mutate(n=row_number()) %>%
+                       filter(n>=max(n, na.rm=TRUE)-(24*7*3)+1) %>%
+                       group_by(weekday,hour) %>%
+                       summarise(hourly_orders=sum(daily_orders*perc_orders,na.rm=TRUE),
+                                 total_orders=sum(daily_orders,na.rm=TRUE)
+                                 ) %>%
+                       ungroup() %>%
+                       arrange(weekday,hour) %>%
+                       mutate(multiplier=hourly_orders/total_orders) %>%
+                       mutate(multiplier=case_when(multiplier<=0.002 ~ 0, TRUE ~ multiplier)) %>%
+                       select(weekday,hour,multiplier)
+# Hourly Predictions
+fcstasihour <- fcstasi %>%
+               filter(method!='actual') %>%
+               mutate(date=as.Date(ymd(date))) %>%
+               mutate(weekday=weekdays(date)) %>%
+               group_by(weekday) %>%
+               left_join(asi_hour_multiplier, by=c('weekday'='weekday')) %>%
+               mutate(hour_forecast=round(forecast*multiplier,0)) %>%
+               ungroup() %>%
+               group_by(date,method) %>%
+               mutate(forecast=sum(hour_forecast, na.rm=TRUE)) %>%
+               filter(forecast>0) %>%
+               ungroup() %>%
+               mutate(city='ASI') %>%
+               select(city,date,weekday,hour,method,hour_forecast) %>%
+               pivot_wider(names_from=method, values_from=hour_forecast) %>% # SOLO ASI
+               mutate(SeasonalNaive=0) %>%
+               select(city:hour,SeasonalNaive,HoltWinters:TBATS)
+```
+
+
+
+```{r, include=FALSE, warning=FALSE, echo=FALSE}
+# EXPORT HOURLY PREDICTIONS TO CSV
+fcstpehour <- rbind(fcstlimhour,fcstaqphour,fcsttruhour,fcstchihour,fcstpiuhour,fcstsjlhour,fcstcuzhour,fcsthuahour,fcstchbhour,fcsticahour,fcstlmshour,fcstasihour) %>%
+              mutate(excel_date=as.numeric(difftime(date, as.Date("1899-12-30")))) %>% 
+              mutate(concat=paste(city,paste(excel_date,hour,sep=''), sep='')) %>% 
+              select(city:hour,concat,everything(),-excel_date)
+write_csv(fcstpehour,'C:/Users/Gerardo Flores/Documents/RMkt/RForecast/forecast_orders.csv')
+```
