@@ -1,8 +1,6 @@
 ---
-title: "Forecast Glovo PE - 2021"
-#subtitle: "August 2020"
+title: "Automated Forecast"
 author: "Gerardo Flores Sempertegui"
-#date: "9/3/2020"
 output: 
     pdf_document:
         #toc: true
