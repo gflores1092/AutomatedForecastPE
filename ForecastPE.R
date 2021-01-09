@@ -31,7 +31,6 @@ library(fpp3)
 library(sweep)
 library(knitr)
 library(googlesheets4)
-#Run query: https://glovoapp.eu.looker.com/sql/7myb3rxgtz6p9h)
 #Read calendar
 calendar <- read_csv('C:/Users/Gerardo Flores/Documents/RMkt/RForecast/Calendar/calendar.csv', col_names=TRUE, trim_ws=TRUE, quote="\"")
 #Read data
